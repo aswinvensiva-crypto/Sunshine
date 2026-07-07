@@ -1,0 +1,33 @@
+{
+  "name": "sunshine-backend",
+  "version": "1.1.0",
+  "private": true,
+  "description": "Sunshine — resort booking + admin backend (Express + PostgreSQL)",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "dev": "nodemon server/server.js",
+    "db:setup": "node db/setup.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^7.0.0-rc13",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.2.0",
+    "node-cron": "^4.4.1",
+    "nodemailer": "^9.0.0",
+    "pdfkit": "^0.19.1",
+    "pg": "^8.12.0",
+    "pino": "^10.3.1",
+    "qrcode-terminal": "^0.12.0",
+    "razorpay": "^2.9.6",
+    "socket.io": "^4.8.3",
+    "twilio": "^6.0.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  }
+}
