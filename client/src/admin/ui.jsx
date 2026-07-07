@@ -2,6 +2,7 @@
  * ui.jsx — reusable mini-components shared across every admin page.
  * Spinner, ApiError, EmptyState, Modal, Badge, ProgressBar.
  */
+import { useEffect } from "react";
 import { X } from "lucide-react";
 
 export function Spinner() {
@@ -28,6 +29,14 @@ export function EmptyState({ text = "No data yet.", icon: Icon }) {
 }
 
 export function Modal({ title, onClose, children, maxWidth = 480 }) {
+  /* Esc closes the modal — this is the modal's own handler that the global
+     shortcut listener defers to (see useChordShortcuts' isOverlayInDom). */
+  useEffect(() => {
+    const onKeyDown = (e) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
   return (
     <div className="ff-backdrop" onClick={e => { if (e.target.classList.contains("ff-backdrop")) onClose(); }}>
       <div className="ff-modal" style={{ maxWidth }}>
@@ -125,6 +134,10 @@ export function Grid2({ children }) {
   return <div className="ff-grid-2">{children}</div>;
 }
 
-export function TableWrap({ children }) {
-  return <div className="ff-table-wrap"><table className="ff-table">{children}</table></div>;
+export function TableWrap({ children, sticky = false }) {
+  return (
+    <div className={`ff-table-wrap ${sticky ? "ff-sticky-head" : ""}`}>
+      <table className="ff-table">{children}</table>
+    </div>
+  );
 }

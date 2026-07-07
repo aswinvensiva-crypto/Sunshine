@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Scale, CheckCircle, AlertCircle, DollarSign, Receipt, TrendingDown, Plus, TrendingUp } from "lucide-react";
 import { useApi, adminDashboard, adminExpenses, adminBookings, addExpense, getUser, rupee, notify } from "./adminContext.js";
 import { Spinner, ApiError, SectionHeader, Card, StatCard, TableWrap, ProgressBar, SideDrawer } from "./ui.jsx";
+import FfSubmitButton from "../components/FfSubmitButton.jsx";
 import DonutChart from "../components/accounts/DonutChart.jsx";
 import BarChart from "../components/accounts/BarChart.jsx";
 import SuppressedYieldPanel from "../components/accounts/SuppressedYieldPanel.jsx";
@@ -188,7 +189,7 @@ export default function Accounts({ onNavigate }) {
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}><div style={{ width: 12, height: 12, borderRadius: 3, background: "var(--ff-danger)" }}/> Shortfall</div>
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}><div style={{ width: 12, height: 12, borderRadius: 3, background: "var(--ff-warning)" }}/> PMS missing</div>
           </div>
-          <TableWrap>
+          <TableWrap sticky>
             <thead>
               <tr>
                 <th>Date</th><th>Description</th>
@@ -266,7 +267,7 @@ export default function Accounts({ onNavigate }) {
             </div>
             <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
               <button type="button" className="ff-btn ff-btn-ghost" onClick={() => setShowModal(false)}>Cancel</button>
-              <button type="submit" className="ff-btn ff-btn-primary" disabled={saving}>{saving ? "Saving…" : "Add Expense"}</button>
+              <FfSubmitButton className="ff-btn-primary" onClick={handleAddExpense} spinnerLabel="Saving…">Add Expense</FfSubmitButton>
             </div>
           </form>
         </SideDrawer>

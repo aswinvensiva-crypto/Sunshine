@@ -6,6 +6,8 @@ import {
 } from "./adminContext.js";
 import { adminConflictLog, earlyCheckout, markRefundProcessed, earlyCheckoutPreview, extendAvailability, extendStay } from "../api/client.js";
 import { Spinner, ApiError, SectionHeader, TableWrap, StatusBadge, Modal, SideDrawer, Field, Grid2 } from "./ui.jsx";
+import FfSubmitButton from "../components/FfSubmitButton.jsx";
+import PaginationControls from "../components/PaginationControls.jsx";
 
 const BOOKING_STATUS_MAP = {
   confirmed:   "ff-badge-blue",
@@ -90,6 +92,9 @@ export default function Bookings({ isStaff = false }) {
   const [search, setSearch]           = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [otaOnly, setOtaOnly]           = useState(false);
+  // Pagination
+  const [page, setPage]         = useState(1);
+  const [pageSize, setPageSize] = useState(25);
   // Delete all
   const [confirmDelAll, setConfirmDelAll] = useState(false);
   const [deletingAll, setDeletingAll]     = useState(false);
@@ -346,6 +351,9 @@ export default function Bookings({ isStaff = false }) {
       b.email?.toLowerCase().includes(q)
     );
   });
+  const pagedBookings = bookings.slice((page - 1) * pageSize, page * pageSize);
+
+  useEffect(() => { setPage(1); }, [search, statusFilter, otaOnly]);
 
   return (
     <div className="ff-page">
@@ -397,7 +405,7 @@ export default function Bookings({ isStaff = false }) {
       </div>
 
       <div className="ff-card" style={{ padding: 0 }}>
-        <TableWrap>
+        <TableWrap sticky>
           <thead>
             <tr>
               <th>Ref</th><th>Guest</th><th>Room</th>
@@ -415,7 +423,7 @@ export default function Bookings({ isStaff = false }) {
               <tr><td colSpan={12} className="ff-empty" style={{ textAlign: "center" }}>
                 {q || statusFilter ? "No bookings match your search." : "No bookings yet."}
               </td></tr>
-            ) : bookings.map(b => (
+            ) : pagedBookings.map(b => (
               <tr key={b.id}>
                 <td className="ff-mono">{b.reference}</td>
                 <td>{b.guest}</td>
@@ -521,6 +529,14 @@ export default function Bookings({ isStaff = false }) {
         </TableWrap>
       </div>
 
+      <PaginationControls
+        page={page}
+        pageSize={pageSize}
+        total={bookings.length}
+        onPageChange={setPage}
+        onPageSizeChange={(n) => { setPageSize(n); setPage(1); }}
+      />
+
       {/* Edit Modal */}
       {editModal && (
         <SideDrawer
@@ -613,9 +629,9 @@ export default function Bookings({ isStaff = false }) {
               </Field>
             </Grid2>
 
-            <button type="submit" className="ff-btn ff-btn-primary" style={{ width: "100%", justifyContent: "center", marginTop: 8 }} disabled={busy}>
-              {busy ? "Saving…" : "Save Changes"}
-            </button>
+            <FfSubmitButton className="ff-btn-primary" style={{ width: "100%", justifyContent: "center", marginTop: 8 }} onClick={saveEdit} spinnerLabel="Saving…">
+              Save Changes
+            </FfSubmitButton>
           </form>
         </SideDrawer>
       )}
@@ -654,13 +670,13 @@ export default function Bookings({ isStaff = false }) {
               </ul>
               <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
                 <button className="ff-btn ff-btn-ghost" onClick={() => setConfirmBalance(null)}>Cancel</button>
-                <button
-                  className="ff-btn ff-btn-primary"
+                <FfSubmitButton
+                  className="ff-btn-primary"
                   onClick={markBalancePaid}
-                  disabled={markingPaid[confirmBalance?.id]}
+                  spinnerLabel="Recording…"
                 >
-                  {markingPaid[confirmBalance?.id] ? "Recording…" : `Confirm Payment — ${rupee(confirmBalance.pending_amount)}`}
-                </button>
+                  {`Confirm Payment — ${rupee(confirmBalance.pending_amount)}`}
+                </FfSubmitButton>
               </div>
             </div>
           </div>
@@ -777,10 +793,10 @@ export default function Bookings({ isStaff = false }) {
 
                 <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 12 }}>
                   <button type="button" className="ff-btn ff-btn-ghost" onClick={() => { setEarlyCheckoutModal(null); setEarlyPreview(null); }}>Cancel</button>
-                  <button type="submit" className="ff-btn ff-btn-primary" disabled={earlyBusy || (earlyPreview?.balance_due > 0)}>
+                  <FfSubmitButton className="ff-btn-primary" onClick={submitEarlyCheckout} disabled={earlyPreview?.balance_due > 0} spinnerLabel="Processing…">
                     <LogOut size={14} />
-                    {earlyBusy ? "Processing…" : "Confirm Early Checkout"}
-                  </button>
+                    Confirm Early Checkout
+                  </FfSubmitButton>
                 </div>
               </form>
             </div>
@@ -820,15 +836,15 @@ export default function Bookings({ isStaff = false }) {
               </Field>
               <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16 }}>
                 <button className="ff-btn ff-btn-ghost" onClick={() => setRefundProcessModal(null)}>Cancel</button>
-                <button
-                  className="ff-btn ff-btn-primary"
+                <FfSubmitButton
+                  className="ff-btn-primary"
                   style={{ background: "#22c55e", borderColor: "#22c55e" }}
                   onClick={submitRefundProcessed}
-                  disabled={refundProcessBusy}
+                  spinnerLabel="Saving…"
                 >
                   <RotateCcw size={14} />
-                  {refundProcessBusy ? "Saving…" : "Confirm — Refund Issued"}
-                </button>
+                  Confirm — Refund Issued
+                </FfSubmitButton>
               </div>
             </div>
           </div>
@@ -978,16 +994,15 @@ export default function Bookings({ isStaff = false }) {
               <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 12 }}>
                 <button type="button" className="ff-btn ff-btn-ghost" onClick={() => setExtendModal(null)}>Cancel</button>
                 {extendAvail && (extendSelectedAlt ? extendSelectedAlt.fully_available : extendAvail.same_type.available_all) && (
-                  <button
-                    type="button"
-                    className="ff-btn ff-btn-primary"
+                  <FfSubmitButton
+                    className="ff-btn-primary"
                     style={{ background: "#0ea5e9", borderColor: "#0ea5e9" }}
                     onClick={submitExtend}
-                    disabled={extendBusy}
+                    spinnerLabel="Extending…"
                   >
                     <CalendarPlus size={14} />
-                    {extendBusy ? "Extending…" : `Extend to ${fmtDate(extendNewCheckout)}`}
-                  </button>
+                    {`Extend to ${fmtDate(extendNewCheckout)}`}
+                  </FfSubmitButton>
                 )}
               </div>
             </div>
@@ -1050,14 +1065,14 @@ export default function Bookings({ isStaff = false }) {
               </p>
               <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
                 <button className="ff-btn ff-btn-ghost" onClick={() => setConfirmDelAll(false)}>Cancel</button>
-                <button
-                  className="ff-btn ff-btn-primary"
+                <FfSubmitButton
+                  className="ff-btn-primary"
                   style={{ background: "var(--ff-danger)", borderColor: "var(--ff-danger)" }}
                   onClick={deleteAllBookings}
-                  disabled={deletingAll}
+                  spinnerLabel="Deleting…"
                 >
-                  {deletingAll ? "Deleting…" : "Yes, Delete All"}
-                </button>
+                  Yes, Delete All
+                </FfSubmitButton>
               </div>
             </div>
           </div>
@@ -1078,9 +1093,9 @@ export default function Bookings({ isStaff = false }) {
               </p>
               <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
                 <button className="ff-btn ff-btn-ghost" onClick={() => setConfirmDel(null)}>Cancel</button>
-                <button className="ff-btn ff-btn-primary" style={{ background: "var(--ff-danger)", borderColor: "var(--ff-danger)" }} onClick={confirmDelete} disabled={busy}>
-                  {busy ? "Deleting…" : "Yes, Delete"}
-                </button>
+                <FfSubmitButton className="ff-btn-primary" style={{ background: "var(--ff-danger)", borderColor: "var(--ff-danger)" }} onClick={confirmDelete} spinnerLabel="Deleting…">
+                  Yes, Delete
+                </FfSubmitButton>
               </div>
             </div>
           </div>

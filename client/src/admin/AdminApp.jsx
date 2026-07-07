@@ -1,5 +1,5 @@
 import './admin.css';
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   Menu, ChevronDown, Plus, PenLine, History,
   Moon, Sun, LayoutGrid, LogOut, ChevronRight, X,
@@ -9,6 +9,8 @@ import {
 } from "lucide-react";
 import { login, setSession, getUser, getToken, clearSession, initToaster } from "./adminContext.js";
 import LoginPage from "./LoginPage.jsx";
+import ShortcutLayer from "../components/ShortcutLayer.jsx";
+import Breadcrumbs from "../components/Breadcrumbs.jsx";
 
 import Dashboard        from "./Dashboard.jsx";
 import CalendarView     from "./Calendar.jsx";
@@ -205,28 +207,31 @@ function AdminShell({ onLogout }) {
     setActiveDropdown(null);
   };
 
-  /* Chord shortcut: n → d navigates to dashboard */
-  useEffect(() => {
-    let firstKey = null;
-    let timer = null;
-    const handler = (e) => {
-      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
-      if (firstKey === "n" && e.key === "d") {
-        clearTimeout(timer);
-        firstKey = null;
-        navigate("dashboard");
-      } else if (e.key === "n") {
-        firstKey = "n";
-        clearTimeout(timer);
-        timer = setTimeout(() => { firstKey = null; }, 1000);
-      } else {
-        firstKey = null;
-        clearTimeout(timer);
-      }
-    };
-    document.addEventListener("keydown", handler);
-    return () => { document.removeEventListener("keydown", handler); clearTimeout(timer); };
+  /* Closes any shell-owned overlay (grid menu, user panel, nav dropdown).
+     Used by the global Esc handler in ShortcutLayer — returns true if
+     something was actually open, so Esc doesn't also navigate up. */
+  const closeOverlays = useCallback(() => {
+    if (menuOpen || userOpen || activeDropdown) {
+      setMenuOpen(false); setUserOpen(false); setActiveDropdown(null);
+      return true;
+    }
+    return false;
+  }, [menuOpen, userOpen, activeDropdown]);
+
+  /* Shared close-timer for hover-intent nav dropdowns: leaving a trigger or
+     panel doesn't close immediately — it schedules a close, so moving the
+     cursor to another open menu (or back into the same one) cancels it
+     instead of flickering. */
+  const dropdownCloseTimer = useRef(null);
+  const openDropdown = useCallback((key) => {
+    clearTimeout(dropdownCloseTimer.current);
+    setActiveDropdown(key);
   }, []);
+  const scheduleCloseDropdown = useCallback(() => {
+    clearTimeout(dropdownCloseTimer.current);
+    dropdownCloseTimer.current = setTimeout(() => setActiveDropdown(null), 160);
+  }, []);
+  useEffect(() => () => clearTimeout(dropdownCloseTimer.current), []);
 
   /* Close dropdown panels on outside click */
   useEffect(() => {
@@ -288,18 +293,29 @@ function AdminShell({ onLogout }) {
             return (
               <div
                 key={menu.key}
-                className="jq-nav-dropdown"
-                onMouseEnter={() => setActiveDropdown(menu.key)}
-                onMouseLeave={() => setActiveDropdown(null)}
+                className={`jq-nav-dropdown ${isOpen ? "open" : ""}`}
+                onMouseEnter={() => openDropdown(menu.key)}
+                onMouseLeave={scheduleCloseDropdown}
               >
-                <button
-                  className={`jq-nav-link ${isGroupActive ? "active" : ""} ${isOpen ? "open" : ""}`}
-                >
-                  {menu.label}
-                  <ChevronDown size={13} className={`jq-nav-chevron ${isOpen ? "rotated" : ""}`} />
-                </button>
+                <span className={`jq-nav-link ${isGroupActive ? "active" : ""} ${isOpen ? "open" : ""}`}>
+                  <button className="jq-nav-link-label" onClick={() => navigate(menu.items[0].key)}>
+                    {menu.label}
+                  </button>
+                  <button
+                    className="jq-nav-caret"
+                    aria-label={`Toggle ${menu.label} menu`}
+                    aria-expanded={isOpen}
+                    onClick={() => (isOpen ? setActiveDropdown(null) : openDropdown(menu.key))}
+                  >
+                    <ChevronDown size={13} className={`jq-nav-chevron ${isOpen ? "rotated" : ""}`} />
+                  </button>
+                </span>
                 {isOpen && (
-                  <div className="jq-nav-dropdown-menu">
+                  <div
+                    className="jq-nav-dropdown-menu"
+                    onMouseEnter={() => openDropdown(menu.key)}
+                    onMouseLeave={scheduleCloseDropdown}
+                  >
                     {menu.items.map(item => (
                       <button
                         key={item.key}
@@ -319,6 +335,8 @@ function AdminShell({ onLogout }) {
 
         {/* Right: more menu + user info */}
         <div className="jq-topbar-right">
+          <span className="ff-shortcut-hint">Press <kbd className="ff-kbd">?</kbd> for shortcuts</span>
+
           {/* All pages grid menu */}
           <button
             data-jq-toggle="menu"
@@ -347,10 +365,19 @@ function AdminShell({ onLogout }) {
         </div>
       </header>
 
+      <Breadcrumbs activeKey={active} escBackTo={navParams?.escBackTo} onNavigate={navigate} />
+
       {/* ── Page content ── */}
       <main className="jq-main">
         <Page />
       </main>
+
+      <ShortcutLayer
+        navigate={navigate}
+        activeKey={active}
+        escBackTo={navParams?.escBackTo}
+        closeOverlays={closeOverlays}
+      />
 
       {/* ── Grid dropdown menu ── */}
       {menuOpen && (

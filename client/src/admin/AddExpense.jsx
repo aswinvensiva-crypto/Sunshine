@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ArrowLeft, Trash2, X } from "lucide-react";
 import { useApi, apiFetch, adminExpenses, addExpense, deleteExpense, getUser, rupee, fmtDate, notify } from "./adminContext.js";
 import { SectionHeader, Card, Field, Grid2, TableWrap } from "./ui.jsx";
+import FfSubmitButton from "../components/FfSubmitButton.jsx";
 
 const EXPENSE_CATEGORIES = ["Pool", "Salaries", "Utilities", "Supplies", "Marketing", "Maintenance", "Food & Beverage", "Other"];
 
@@ -126,14 +127,14 @@ export default function AddExpense({ onNavigate }) {
             </Field>
           </Grid2>
 
-          <button
-            type="submit"
-            className="ff-btn ff-btn-primary"
+          <FfSubmitButton
+            className="ff-btn-primary"
             style={{ width: "100%", justifyContent: "center" }}
-            disabled={saving}
+            onClick={handleSubmit}
+            spinnerLabel="Saving…"
           >
-            {saving ? "Saving…" : "Add Expense"}
-          </button>
+            Add Expense
+          </FfSubmitButton>
         </form>
       </Card>
 
@@ -197,9 +198,14 @@ export default function AddExpense({ onNavigate }) {
               <p style={{ color: "var(--ff-muted)", marginBottom: 20 }}>This will permanently delete all expense records. This action cannot be undone.</p>
               <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
                 <button className="ff-btn ff-btn-ghost" onClick={() => setConfirmClearAll(false)}>Cancel</button>
-                <button className="ff-btn ff-btn-primary" style={{ background: "var(--ff-danger)", borderColor: "var(--ff-danger)" }} onClick={handleClearAllExpenses} disabled={clearingAll}>
-                  {clearingAll ? "Clearing…" : "Yes, Clear All"}
-                </button>
+                <FfSubmitButton
+                  className="ff-btn-primary"
+                  style={{ background: "var(--ff-danger)", borderColor: "var(--ff-danger)" }}
+                  onClick={handleClearAllExpenses}
+                  spinnerLabel="Clearing…"
+                >
+                  Yes, Clear All
+                </FfSubmitButton>
               </div>
             </div>
           </div>
@@ -217,9 +223,14 @@ export default function AddExpense({ onNavigate }) {
               <p style={{ color: "var(--ff-muted)", marginBottom: 20 }}>This will permanently remove the expense record.</p>
               <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
                 <button className="ff-btn ff-btn-ghost" onClick={() => setConfirmDel(null)}>Cancel</button>
-                <button className="ff-btn ff-btn-primary" style={{ background: "var(--ff-danger)", borderColor: "var(--ff-danger)" }} onClick={handleDeleteExpense} disabled={saving}>
-                  {saving ? "Deleting…" : "Yes, Delete"}
-                </button>
+                <FfSubmitButton
+                  className="ff-btn-primary"
+                  style={{ background: "var(--ff-danger)", borderColor: "var(--ff-danger)" }}
+                  onClick={handleDeleteExpense}
+                  spinnerLabel="Deleting…"
+                >
+                  Yes, Delete
+                </FfSubmitButton>
               </div>
             </div>
           </div>

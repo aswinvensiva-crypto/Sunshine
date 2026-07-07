@@ -8,6 +8,7 @@ import { useState, useRef } from "react";
 import { Plus, Pencil, CheckCircle, Clock, AlertTriangle, X, Flag, Trash2, Camera, Eye, ShieldCheck } from "lucide-react";
 import { useApi, apiFetch, deleteTask, getUser, fmtDate, fmtTime, todayISO, notify } from "./adminContext.js";
 import { Spinner, ApiError, SectionHeader, Card, Field, Grid2, TableWrap, Modal, SideDrawer, EmptyState } from "./ui.jsx";
+import FfSubmitButton from "../components/FfSubmitButton.jsx";
 
 const PRIORITIES = ["Low", "Medium", "High", "Urgent"];
 const STATUSES   = ["Pending", "In-Progress", "Completed", "Delayed"];
@@ -218,9 +219,9 @@ export default function Tasks({ isStaff = false }) {
               <input type="checkbox" checked={form.photo_required} onChange={e => f("photo_required", e.target.checked)} style={{ width:16, height:16, accentColor:"var(--ff-primary)" }}/>
               <span style={{ fontSize:13, color:"var(--ff-text)" }}>Require photo evidence to complete</span>
             </label>
-            <button type="submit" className="ff-btn ff-btn-primary" style={{ width:"100%", justifyContent:"center" }} disabled={busy}>
-              {busy ? "Saving…" : (modal === "new" ? "Create Task" : "Save Changes")}
-            </button>
+            <FfSubmitButton className="ff-btn-primary" style={{ width:"100%", justifyContent:"center" }} onClick={save} spinnerLabel="Saving…">
+              {modal === "new" ? "Create Task" : "Save Changes"}
+            </FfSubmitButton>
           </form>
         </SideDrawer>
       )}
@@ -237,9 +238,9 @@ export default function Tasks({ isStaff = false }) {
               <p style={{ color:"var(--ff-muted)", marginBottom:20 }}>This will permanently remove the task.</p>
               <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
                 <button className="ff-btn ff-btn-ghost" onClick={() => setConfirmDel(null)}>Cancel</button>
-                <button className="ff-btn ff-btn-primary" style={{ background:"var(--ff-danger)", borderColor:"var(--ff-danger)" }} onClick={doDeleteTask} disabled={busy}>
-                  {busy ? "Deleting…" : "Yes, Delete"}
-                </button>
+                <FfSubmitButton className="ff-btn-primary" style={{ background:"var(--ff-danger)", borderColor:"var(--ff-danger)" }} onClick={doDeleteTask} spinnerLabel="Deleting…">
+                  Yes, Delete
+                </FfSubmitButton>
               </div>
             </div>
           </div>
@@ -379,9 +380,9 @@ function TaskPhotoCapture({ task: t, onDone }) {
           <Camera size={15}/> {needsPhoto ? "Attach Photo Evidence *" : "Attach Photo Evidence"}
         </button>
       )}
-      <button className="ff-btn ff-btn-primary" style={{ width:"100%", justifyContent:"center" }} onClick={submit} disabled={!dataUrl || submitting}>
-        {submitting ? "Uploading…" : <><CheckCircle size={15}/> Submit Verified Task</>}
-      </button>
+      <FfSubmitButton className="ff-btn-primary" style={{ width:"100%", justifyContent:"center" }} onClick={submit} disabled={!dataUrl} spinnerLabel="Uploading…">
+        <CheckCircle size={15}/> Submit Verified Task
+      </FfSubmitButton>
     </div>
   );
 }

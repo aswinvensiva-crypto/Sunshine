@@ -23,6 +23,12 @@
   --ff-num:     'IBM Plex Mono', 'DM Mono', monospace;
   --serif:      'Inter', system-ui, sans-serif;
   --sans:       'Inter', system-ui, sans-serif;
+
+  /* Motion & focus tokens */
+  --ff-ease:          cubic-bezier(0.2, 0.7, 0.2, 1);
+  --ff-dur-fast:      120ms;
+  --ff-dur-mid:       220ms;
+  --ff-shadow-focus:  0 0 0 4px rgba(29, 78, 216, .25); /* --ff-primary focus ring */
 }
 
 * { box-sizing: border-box; }
@@ -951,11 +957,9 @@
 
 .jq-nav-link {
   background: none;
-  border: none;
-  padding: 7px 16px;
+  padding: 3px 3px 3px 16px;
   font-size: 14px;
   color: #6b7280;
-  cursor: pointer;
   font-family: 'Inter', system-ui, sans-serif;
   font-weight: 500;
   border-radius: 6px;
@@ -968,9 +972,25 @@
 .jq-nav-link.active { color: #16a34a; font-weight: 600; }
 .jq-nav-link.open { color: #111827; background: #f3f4f6; }
 
+/* Label + caret split buttons — label click navigates to the group's
+   primary page, caret toggles the dropdown (touch/keyboard affordance). */
+.jq-nav-link-label,
+.jq-nav-caret {
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+}
+.jq-nav-link-label { padding: 4px 4px 4px 0; }
+.jq-nav-caret { padding: 4px; border-radius: 4px; }
+.jq-nav-caret:hover { background: rgba(0,0,0,.06); }
+
 /* Chevron inside nav button */
 .jq-nav-chevron {
-  margin-left: 4px;
+  margin-left: 0;
   transition: transform .2s;
   vertical-align: middle;
   flex-shrink: 0;
@@ -980,6 +1000,16 @@
 /* Nav dropdown wrapper */
 .jq-nav-dropdown {
   position: relative;
+}
+/* Invisible hover bridge: keeps the wrapper's hover subtree unbroken while
+   the cursor travels the gap between the trigger and the dropdown panel
+   below it, so the menu doesn't drop mid-transit. */
+.jq-nav-dropdown.open::before {
+  content: "";
+  position: absolute;
+  left: 0; right: 0;
+  top: 100%;
+  height: 10px;
 }
 
 /* Nav dropdown menu panel */
@@ -2131,3 +2161,192 @@
 @media (max-width: 480px) {
   .jqd-week-grid { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* ═══════════════════════════════════════════════
+   UI upgrade: keyboard shortcuts, breadcrumbs,
+   pagination, table/motion/focus polish
+   (colors reuse the JetQuid Blue theme above — no new palette)
+   ═══════════════════════════════════════════════ */
+
+/* ── Keyboard key chip ─────────────────────────────────────────── */
+.ff-kbd {
+  display: inline-grid; place-items: center;
+  min-width: 20px; height: 20px; padding: 0 6px;
+  border-radius: 6px;
+  background: rgba(29,78,216,.08);
+  border: 1px solid rgba(29,78,216,.22);
+  box-shadow: 0 1px 0 rgba(0,0,0,.06);
+  font: 700 11px/1 var(--ff-num);
+  color: var(--ff-primary);
+  text-transform: lowercase;
+}
+
+/* ── Subtle header hint ("Press ? for shortcuts") ──────────────── */
+.ff-shortcut-hint {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--ff-muted);
+  margin-right: 4px;
+  white-space: nowrap;
+}
+
+/* ── Chord-in-progress toast ───────────────────────────────────── */
+.ff-chord-toast {
+  position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
+  z-index: 1000;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  max-width: min(92vw, 760px);
+  padding: 10px 16px;
+  border-radius: 999px;
+  background: var(--ff-text);
+  border: 1px solid var(--ff-primary);
+  box-shadow: 0 12px 32px rgba(17,24,39,.35);
+  color: #fff; font-size: 12.5px;
+  animation: ff-chord-in var(--ff-dur-mid) var(--ff-ease);
+}
+.ff-chord-toast .ff-kbd { background: rgba(255,255,255,.14); border-color: rgba(255,255,255,.28); color: #93c5fd; }
+.ff-chord-hint { display: inline-flex; align-items: center; gap: 5px; opacity: .85; }
+
+@keyframes ff-chord-in {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* ── "?" help overlay ──────────────────────────────────────────── */
+.ff-shortcut-overlay {
+  position: fixed; inset: 0; z-index: 1001;
+  display: grid; place-items: center;
+  background: rgba(17,24,39,.55);
+  backdrop-filter: blur(3px);
+  padding: 16px;
+}
+.ff-shortcut-card {
+  width: min(92vw, 520px);
+  border-radius: var(--ff-radius);
+  background: var(--ff-card);
+  border: 1px solid var(--ff-border);
+  border-top: 2px solid var(--ff-primary);
+  box-shadow: 0 32px 80px -20px rgba(17,24,39,.35);
+  padding: 20px 22px;
+  color: var(--ff-text);
+  animation: ff-chord-in var(--ff-dur-mid) var(--ff-ease);
+}
+.ff-shortcut-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+.ff-shortcut-head h3 { margin: 0; font-family: var(--serif); font-size: 18px; color: var(--ff-text); }
+.ff-shortcut-close { background: none; border: none; color: var(--ff-muted); cursor: pointer; font-size: 14px; transition: color var(--ff-dur-fast) var(--ff-ease); }
+.ff-shortcut-close:hover { color: var(--ff-primary); }
+.ff-shortcut-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 20px; }
+.ff-shortcut-row { display: flex; align-items: center; gap: 10px; font-size: 13px; padding: 4px 0; color: var(--ff-sub); }
+.ff-shortcut-keys { display: inline-flex; align-items: center; gap: 5px; min-width: 96px; }
+.ff-then { font-size: 10px; color: var(--ff-muted); }
+
+@media (max-width: 560px) { .ff-shortcut-grid { grid-template-columns: 1fr; } }
+
+/* ── Sticky breadcrumb sub-header ──────────────────────────────── */
+.ff-breadcrumbs {
+  position: sticky; top: 56px; z-index: 40;
+  display: flex; align-items: center; gap: 14px;
+  padding: 9px 24px;
+  background: var(--ff-card);
+  border-bottom: 1px solid var(--ff-border);
+}
+.ff-breadcrumb-back {
+  display: flex; align-items: center; gap: 6px;
+  background: none; border: none; cursor: pointer;
+  font-size: 12.5px; font-weight: 600; color: var(--ff-primary);
+  padding: 5px 10px; border-radius: 7px;
+  transition: background var(--ff-dur-fast) var(--ff-ease);
+  white-space: nowrap;
+}
+.ff-breadcrumb-back:hover { background: rgba(29,78,216,.08); }
+.ff-breadcrumb-back:disabled { opacity: .5; cursor: default; }
+.ff-breadcrumb-trail { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ff-muted); overflow: hidden; }
+.ff-breadcrumb-step { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.ff-breadcrumb-sep { color: var(--ff-border); }
+.ff-breadcrumb-link { background: none; border: none; cursor: pointer; color: var(--ff-muted); font-size: 12.5px; padding: 0; transition: color var(--ff-dur-fast) var(--ff-ease); }
+.ff-breadcrumb-link:hover { color: var(--ff-primary); }
+.ff-breadcrumb-current { color: var(--ff-text); font-weight: 600; }
+.ff-breadcrumb-esc { margin-left: auto; flex-shrink: 0; }
+
+@media (max-width: 640px) {
+  .ff-breadcrumbs { padding: 8px 14px; gap: 10px; }
+  .ff-breadcrumb-trail { display: none; }
+}
+
+/* ── Async submit button spinner (FfSubmitButton) ──────────────── */
+.ff-btn-spinner {
+  width: 14px; height: 14px; flex-shrink: 0;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,.4);
+  border-top-color: #fff;
+  animation: ff-spin .6s linear infinite;
+}
+.ff-btn-outline .ff-btn-spinner,
+.ff-btn-ghost .ff-btn-spinner { border-color: rgba(29,78,216,.25); border-top-color: var(--ff-primary); }
+@keyframes ff-spin { to { transform: rotate(360deg); } }
+
+/* ── Table ergonomics ──────────────────────────────────────────── */
+.ff-num { font-variant-numeric: tabular-nums lining-nums; font-family: var(--ff-num); }
+
+.ff-table-wrap.ff-sticky-head { max-height: 70vh; overflow-y: auto; }
+.ff-sticky-head thead th {
+  position: sticky; top: 0; z-index: 2;
+  background: var(--ff-card);
+}
+
+/* ── Pagination controls ───────────────────────────────────────── */
+.ff-pagination {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap;
+  padding: 12px 4px 4px;
+  font-size: 12.5px; color: var(--ff-muted);
+}
+.ff-pagination-size { display: flex; align-items: center; gap: 8px; }
+.ff-pagination-size label { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+.ff-pagination-total { margin-left: 6px; }
+.ff-pagination-nav { display: flex; align-items: center; gap: 4px; }
+.ff-pagination-page { padding: 0 8px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ff-pagination-jump { margin-left: 6px; }
+.ff-pagination-jump input {
+  width: 72px; padding: 6px 8px; font-size: 12px;
+  border: 1px solid rgba(29,78,216,.22); border-radius: 6px;
+  background: var(--ff-card); color: var(--ff-text);
+}
+@media (max-width: 768px) {
+  .ff-pagination { flex-direction: column; align-items: stretch; gap: 10px; }
+  .ff-pagination-nav { justify-content: center; }
+}
+
+/* ── Number-input safety: hide native spinner, no accidental scroll-bump ── */
+input[type=number]::-webkit-inner-spin-button,
+input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+input[type=number] { -moz-appearance: textfield; }
+
+/* ── Focus-visible ring (uses --ff-shadow-focus, existing theme color) ── */
+.ff-btn:focus-visible,
+.ff-icon-btn:focus-visible,
+.jq-nav-link-label:focus-visible,
+.jq-nav-caret:focus-visible,
+.jq-nav-dropdown-item:focus-visible,
+.ff-field input:focus-visible,
+.ff-field select:focus-visible,
+.ff-field textarea:focus-visible,
+.ff-select:focus-visible,
+.ff-select-sm:focus-visible {
+  outline: none;
+  box-shadow: var(--ff-shadow-focus);
+}
+
+/* ── Dark-mode overrides for the new UI (mirrors .jq-shell[data-theme="dark"] above) ── */
+.jq-shell[data-theme="dark"] .ff-kbd { background: rgba(96,165,250,.12); border-color: rgba(96,165,250,.3); color: #93c5fd; }
+.jq-shell[data-theme="dark"] .ff-shortcut-hint { color: #64748b; }
+.jq-shell[data-theme="dark"] .ff-shortcut-card { background: #1e293b; border-color: #334155; }
+.jq-shell[data-theme="dark"] .ff-shortcut-head h3 { color: #f1f5f9; }
+.jq-shell[data-theme="dark"] .ff-shortcut-row { color: #cbd5e1; }
+.jq-shell[data-theme="dark"] .ff-breadcrumbs { background: #1e293b; border-bottom-color: #334155; }
+.jq-shell[data-theme="dark"] .ff-breadcrumb-current { color: #f1f5f9; }
+.jq-shell[data-theme="dark"] .ff-breadcrumb-link { color: #64748b; }
+.jq-shell[data-theme="dark"] .ff-breadcrumb-link:hover { color: #60a5fa; }
+.jq-shell[data-theme="dark"] .ff-breadcrumb-back { color: #60a5fa; }
+.jq-shell[data-theme="dark"] .ff-breadcrumb-back:hover { background: #293548; }
+.jq-shell[data-theme="dark"] .ff-sticky-head thead th { background: #1e293b; }
+.jq-shell[data-theme="dark"] .ff-pagination-jump input { background: #1e293b; border-color: #334155; color: #e2e8f0; }

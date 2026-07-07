@@ -10,6 +10,7 @@ import { useState, useRef } from "react";
 import { Camera, CheckCircle, Eye, Clock, AlertTriangle, Plus, X, Image, Pencil, Trash2, ShieldCheck } from "lucide-react";
 import { useApi, apiFetch, fmtDate, fmtTime, todayISO, notify } from "./adminContext.js";
 import { Spinner, ApiError, SectionHeader, Card, Field, Grid2, TableWrap, Modal, SideDrawer, StatusBadge, EmptyState } from "./ui.jsx";
+import FfSubmitButton from "../components/FfSubmitButton.jsx";
 
 const ROUTINE_STATUS = {
   Pending:  "ff-badge-muted",
@@ -135,9 +136,9 @@ export default function Routines({ isStaff = false }) {
               <input type="checkbox" checked={form.photo_required} onChange={e => setForm(p => ({...p, photo_required:e.target.checked}))} style={{ width:16, height:16, accentColor:"var(--ff-primary)" }}/>
               <span style={{ fontSize:13, color:"var(--ff-text)" }}>Require photo evidence to complete</span>
             </label>
-            <button type="submit" className="ff-btn ff-btn-primary" style={{ width:"100%", justifyContent:"center" }} disabled={busy}>
-              {busy ? "Scheduling…" : "Schedule Routine"}
-            </button>
+            <FfSubmitButton className="ff-btn-primary" style={{ width:"100%", justifyContent:"center" }} onClick={createRoutine} spinnerLabel="Scheduling…">
+              Schedule Routine
+            </FfSubmitButton>
           </form>
         </SideDrawer>
       )}
@@ -161,9 +162,9 @@ export default function Routines({ isStaff = false }) {
               <input type="checkbox" checked={editForm.photo_required} onChange={e => setEditForm(p => ({...p, photo_required:e.target.checked}))} style={{ width:16, height:16, accentColor:"var(--ff-primary)" }}/>
               <span style={{ fontSize:13, color:"var(--ff-text)" }}>Require photo evidence to complete</span>
             </label>
-            <button type="submit" className="ff-btn ff-btn-primary" style={{ width:"100%", justifyContent:"center" }} disabled={busy}>
-              {busy ? "Saving…" : "Save Changes"}
-            </button>
+            <FfSubmitButton className="ff-btn-primary" style={{ width:"100%", justifyContent:"center" }} onClick={saveEdit} spinnerLabel="Saving…">
+              Save Changes
+            </FfSubmitButton>
           </form>
         </SideDrawer>
       )}
@@ -338,9 +339,9 @@ function RoutineCard({ routine: r, onReload }) {
               <Camera size={15}/> {r.photo_required ? "Capture Photo Evidence *" : "Open Camera & Verify"}
             </button>
           )}
-          <button className="ff-btn ff-btn-primary" style={{ width:"100%", justifyContent:"center" }} onClick={submit} disabled={!image || submitting}>
-            {submitting ? "Uploading…" : <><CheckCircle size={15}/> Submit Verified Task</>}
-          </button>
+          <FfSubmitButton className="ff-btn-primary" style={{ width:"100%", justifyContent:"center" }} onClick={submit} disabled={!image} spinnerLabel="Uploading…">
+            <CheckCircle size={15}/> Submit Verified Task
+          </FfSubmitButton>
         </>
       )}
     </div>

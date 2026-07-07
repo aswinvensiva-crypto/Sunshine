@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Search, UserCheck, Phone, Calendar, TrendingUp, ShieldCheck, Edit2, X, Save, Users, Trash2, BookOpen } from "lucide-react";
 import { useApi, rupee, fmtDate, adminGuests, adminUpdateGuest, adminDeleteGuest, adminGuestBookings, notify } from "./adminContext.js";
 import { Spinner, ApiError, SectionHeader, StatCard, Modal, Field, Grid2 } from "./ui.jsx";
+import FfSubmitButton from "../components/FfSubmitButton.jsx";
 
 const KYC_LABELS = {
   aadhaar:  "Aadhaar",
@@ -128,9 +129,9 @@ function EditGuestModal({ guest, onClose, onSaved }) {
 
       <div className="ff-form-actions" style={{ marginTop: 20 }}>
         <button className="ff-btn ff-btn-outline" onClick={onClose}>Cancel</button>
-        <button className="ff-btn ff-btn-primary" onClick={save} disabled={busy}>
-          <Save size={14} /> {busy ? "Saving…" : "Save changes"}
-        </button>
+        <FfSubmitButton className="ff-btn-primary" onClick={save} spinnerLabel="Saving…">
+          <Save size={14} /> Save changes
+        </FfSubmitButton>
       </div>
     </Modal>
   );
@@ -183,7 +184,7 @@ function GuestDetailModal({ guest, onClose, onEdit }) {
         bookings?.length === 0 ? (
           <p style={{ color: "var(--ff-muted)", fontSize: 13, textAlign: "center", padding: "20px 0" }}>No bookings found</p>
         ) : (
-          <div className="ff-table-wrap" style={{ maxHeight: 320, overflowY: "auto" }}>
+          <div className="ff-table-wrap ff-sticky-head" style={{ maxHeight: 320, overflowY: "auto" }}>
             <table className="ff-table" style={{ minWidth: 560 }}>
               <thead>
                 <tr>
@@ -291,7 +292,7 @@ export default function Guests() {
 
       {!loading && !error && (
         <div className="ff-card" style={{ padding: 0, overflow: "hidden" }}>
-          <div className="ff-table-wrap">
+          <div className="ff-table-wrap ff-sticky-head">
             <table className="ff-table" style={{ minWidth: 900 }}>
               <thead>
                 <tr>

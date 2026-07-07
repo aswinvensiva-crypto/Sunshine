@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Pencil, X, Clock } from "lucide-react";
 import { useApi, apiFetch, getUser, notify } from "./adminContext.js";
 import { Spinner, ApiError, SectionHeader, Card, Field, Grid2, TableWrap, Modal, EmptyState } from "./ui.jsx";
+import FfSubmitButton from "../components/FfSubmitButton.jsx";
 import { UserX } from "lucide-react";
 
 const ROLE_COLOR = {
@@ -194,14 +195,14 @@ export default function ShiftMaster() {
                 </div>
               );
             })()}
-            <button
-              type="submit"
-              className="ff-btn ff-btn-primary"
+            <FfSubmitButton
+              className="ff-btn-primary"
               style={{ width: "100%", justifyContent: "center" }}
-              disabled={busy}
+              onClick={saveDefault}
+              spinnerLabel="Saving…"
             >
-              {busy ? "Saving…" : "Save Default Shift"}
-            </button>
+              Save Default Shift
+            </FfSubmitButton>
           </form>
         </Modal>
       )}
