@@ -139,6 +139,12 @@ async function migrateTenancy(pool) {
       );
     }
 
+    // System-scope rows (cron notifications, WhatsApp retry queue) can be
+    // written outside any tenant context. NULL tenant_id rows are invisible
+    // to every tenant under RLS (fail closed), so this stays safe.
+    await client.query(`ALTER TABLE notification_logs ALTER COLUMN tenant_id DROP NOT NULL`);
+    await client.query(`ALTER TABLE whatsapp_queue ALTER COLUMN tenant_id DROP NOT NULL`);
+
     /* ── 4. Global uniques → per-tenant uniques ──────────────────────── */
     for (const [table, column, legacyName] of PER_TENANT_UNIQUES) {
       await client.query(`ALTER TABLE ${table} DROP CONSTRAINT IF EXISTS ${legacyName}`);

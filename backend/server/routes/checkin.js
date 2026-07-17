@@ -1,11 +1,13 @@
 const router = require('express').Router();
-const { pool } = require('../config/db');
+// Tenant-scoped: mounted behind resolveTenant. Tokens are globally unique but
+// req.db pins RLS to the resort resolved from the subdomain, so a token opened
+// on the wrong resort's domain 404s instead of leaking another tenant's data.
 
 // GET /api/check-in/:token — validate token, return booking/guest info
 router.get('/:token', async (req, res) => {
   const { token } = req.params;
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT cit.id, cit.token, cit.expires_at, cit.used_at,
               b.id AS booking_id, b.reference, b.check_in, b.check_out,
               b.num_guests, b.status, b.pre_checkin_data,
@@ -15,8 +17,8 @@ router.get('/:token', async (req, res) => {
          JOIN bookings b ON b.id = cit.booking_id
          JOIN guests g ON g.id = b.guest_id
          JOIN room_types rt ON rt.id = b.room_type_id
-        WHERE cit.token = $1`,
-      [token]
+        WHERE cit.token = $1 AND cit.tenant_id = $2`,
+      [token, req.tenant.id]
     );
     if (!rows[0]) return res.status(404).json({ error: 'Invalid or expired link' });
     const row = rows[0];
@@ -28,7 +30,7 @@ router.get('/:token', async (req, res) => {
     }
     // Mark used_at on first access
     if (!row.used_at) {
-      await pool.query(`UPDATE check_in_tokens SET used_at = NOW() WHERE token = $1`, [token]);
+      await req.db.query(`UPDATE check_in_tokens SET used_at = NOW() WHERE token = $1 AND tenant_id = $2`, [token, req.tenant.id]);
     }
     res.json({
       booking: {
@@ -60,12 +62,12 @@ router.post('/:token', async (req, res) => {
     return res.status(400).json({ error: 'id_type and id_number are required' });
   }
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT cit.booking_id, cit.expires_at, b.status
          FROM check_in_tokens cit
          JOIN bookings b ON b.id = cit.booking_id
-        WHERE cit.token = $1`,
-      [token]
+        WHERE cit.token = $1 AND cit.tenant_id = $2`,
+      [token, req.tenant.id]
     );
     if (!rows[0]) return res.status(404).json({ error: 'Invalid link' });
     if (new Date(rows[0].expires_at) < new Date()) {
@@ -75,9 +77,9 @@ router.post('/:token', async (req, res) => {
       return res.status(400).json({ error: 'Booking is not active' });
     }
     const data = { id_type, id_number, address: address || null, estimated_arrival: estimated_arrival || null, submitted_at: new Date().toISOString() };
-    await pool.query(
-      `UPDATE bookings SET pre_checkin_data = $1 WHERE id = $2`,
-      [JSON.stringify(data), rows[0].booking_id]
+    await req.db.query(
+      `UPDATE bookings SET pre_checkin_data = $1 WHERE id = $2 AND tenant_id = $3`,
+      [JSON.stringify(data), rows[0].booking_id, req.tenant.id]
     );
     res.json({ ok: true });
   } catch (err) {

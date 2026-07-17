@@ -10,6 +10,16 @@
  * Reliability: messages are held in an in-memory queue for up to 10 minutes
  * while the socket is initialising. On timeout, text payloads are persisted to
  * the whatsapp_queue DB table and auto-retried on the 2-minute heartbeat.
+ *
+ * MULTI-TENANT POLICY (explicit Phase-2 decision, option b of the plan):
+ * this remains ONE process-wide session — every message is sent from the
+ * shared sender number. Messages always go to the correct guest/owner phone
+ * for their own booking, so no tenant's data is sent to another tenant; but
+ * new resorts share the sender identity until per-tenant sessions land.
+ * Follow-up for per-tenant senders: one Baileys auth folder per tenant under
+ * .baileys_auth/<tenant_id>/ keyed off tenant_settings.whatsapp_sender.
+ * The retry queue writes run on the adminPool with tenant_id NULL (system
+ * scope): those rows are invisible to every tenant under RLS.
  */
 
 'use strict';
@@ -37,9 +47,9 @@ let ready        = false;
 let initializing = false;
 let pendingQueue = []; // { jid, payload, resolve, timer }
 
-/* ── lazy DB pool ─────────────────────────────────────────────────────── */
+/* ── lazy DB pool (admin: queue writes are system-scope, see header) ──── */
 let _pool = null;
-const getPool = () => { if (!_pool) _pool = require('../config/db').pool; return _pool; };
+const getPool = () => { if (!_pool) _pool = require('../config/db').adminPool; return _pool; };
 
 /* ── silent pino logger (keeps Baileys noise off the console) ────────── */
 const logger = pino({ level: 'silent' });

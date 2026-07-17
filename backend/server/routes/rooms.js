@@ -1,13 +1,14 @@
 const router = require('express').Router();
-const { pool } = require('../config/db');
 
-// GET /api/rooms  → all room categories
+// GET /api/rooms  → all room categories for this resort (req.db is tenant-scoped)
 router.get('/', async (req, res) => {
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT id, code, name, description, max_occupancy, base_rate, total_rooms
          FROM room_types
-        ORDER BY base_rate ASC`
+        WHERE tenant_id = $1
+        ORDER BY base_rate ASC`,
+      [req.tenant.id]
     );
     res.json(rows);
   } catch (err) {

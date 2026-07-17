@@ -1,11 +1,13 @@
 const router = require('express').Router();
-const { pool } = require('../config/db');
+// Tenant-scoped: mounted behind resolveTenant. Tokens are globally unique but
+// req.db pins RLS to the resort resolved from the subdomain, so a token opened
+// on the wrong resort's domain 404s instead of leaking another tenant's data.
 
 // GET /api/feedback/:token — return booking summary for display
 router.get('/:token', async (req, res) => {
   const { token } = req.params;
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT gf.id, gf.submitted_at, gf.rating_overall, gf.rating_room,
               gf.rating_service, gf.nps_score, gf.comments,
               b.reference, b.check_in, b.check_out,
@@ -14,8 +16,8 @@ router.get('/:token', async (req, res) => {
          JOIN bookings b ON b.id = gf.booking_id
          JOIN guests g ON g.id = gf.guest_id
          JOIN room_types rt ON rt.id = b.room_type_id
-        WHERE gf.token = $1`,
-      [token]
+        WHERE gf.token = $1 AND gf.tenant_id = $2`,
+      [token, req.tenant.id]
     );
     if (!rows[0]) return res.status(404).json({ error: 'Invalid feedback link' });
     res.json(rows[0]);
@@ -35,18 +37,18 @@ router.post('/:token', async (req, res) => {
   }
 
   try {
-    const { rows } = await pool.query(`SELECT id, submitted_at FROM guest_feedback WHERE token = $1`, [token]);
+    const { rows } = await req.db.query(`SELECT id, submitted_at FROM guest_feedback WHERE token = $1 AND tenant_id = $2`, [token, req.tenant.id]);
     if (!rows[0]) return res.status(404).json({ error: 'Invalid feedback link' });
     if (rows[0].submitted_at) return res.status(409).json({ error: 'Feedback already submitted' });
 
-    await pool.query(
+    await req.db.query(
       `UPDATE guest_feedback
           SET rating_overall = $1, rating_room = $2, rating_service = $3,
               nps_score = $4, comments = $5, submitted_at = NOW()
-        WHERE token = $6`,
+        WHERE token = $6 AND tenant_id = $7`,
       [rating_overall || null, rating_room || null, rating_service || null,
        nps_score !== undefined ? nps_score : null,
-       comments || null, token]
+       comments || null, token, req.tenant.id]
     );
     res.json({ ok: true });
   } catch (err) {

@@ -1,7 +1,6 @@
 ﻿const router = require('express').Router();
 const bcrypt = require('bcryptjs');
 const path = require('path');
-const { pool } = require('../config/db');
 const { requireAdmin, requireOwner } = require('../middleware/auth');
 const { sendBookingNotifications, sendInvoiceEmail, sendAdvanceReceiptEmail, sendBalancePaymentAlert, sendCancellationAlert, sendOverbookingAlert, sendSpecialRequestUpdate, sendCheckoutReceipt, sendFeedbackEmail, sendCheckInSMS, sendCheckoutReminder } = require('../services/notify');
 const { sendWhatsApp } = require('../services/whatsapp');
@@ -9,7 +8,7 @@ const multer = require('multer');
 
 const photoStorage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const dir = path.join(__dirname, '..', '..', 'uploads', 'routines');
+    const dir = path.join(__dirname, '..', '..', 'uploads', String(req.tenant.id), 'routines');
     require('fs').mkdirSync(dir, { recursive: true });
     cb(null, dir);
   },
@@ -25,16 +24,16 @@ const uploadPhoto = multer({ storage: photoStorage, limits: { fileSize: 10 * 102
 // GET /api/admin/dashboard
 router.get('/dashboard', async (req, res) => {
   try {
-    const totalRoomsQ = await pool.query('SELECT COALESCE(SUM(total_rooms),0)::int AS n FROM room_types');
+    const totalRoomsQ = await req.db.query('SELECT COALESCE(SUM(total_rooms),0)::int AS n FROM room_types');
     const totalRooms = totalRoomsQ.rows[0].n || 1;
 
-    const occQ = await pool.query(
+    const occQ = await req.db.query(
       `SELECT COALESCE(SUM(booked_units),0)::int AS occupied
          FROM inventory WHERE stay_date = CURRENT_DATE`
     );
     const occupiedToday = occQ.rows[0].occupied;
 
-    const flowQ = await pool.query(
+    const flowQ = await req.db.query(
       `SELECT
         COUNT(*) FILTER (WHERE check_in = CURRENT_DATE AND status <> 'cancelled')  AS arrivals,
         COUNT(*) FILTER (WHERE check_out = CURRENT_DATE AND status <> 'cancelled') AS departures,
@@ -45,7 +44,7 @@ router.get('/dashboard', async (req, res) => {
        FROM bookings`
     );
 
-    const arrivalsByTypeQ = await pool.query(
+    const arrivalsByTypeQ = await req.db.query(
       `SELECT rt.name,
          COUNT(*) FILTER (WHERE b.status <> 'cancelled') AS expected,
          COUNT(*) FILTER (WHERE b.status = 'checked_in') AS checked_in
@@ -55,7 +54,7 @@ router.get('/dashboard', async (req, res) => {
        GROUP BY rt.name`
     );
 
-    const departuresByTypeQ = await pool.query(
+    const departuresByTypeQ = await req.db.query(
       `SELECT rt.name,
          COUNT(*) FILTER (WHERE b.status <> 'cancelled') AS expected,
          COUNT(*) FILTER (WHERE b.status = 'checked_out') AS checked_out
@@ -65,7 +64,7 @@ router.get('/dashboard', async (req, res) => {
        GROUP BY rt.name`
     );
 
-    const monthQ = await pool.query(
+    const monthQ = await req.db.query(
       `SELECT
          COALESCE(SUM(total_amount),0)                       AS revenue,
          COALESCE(SUM(check_out - check_in),0)::int          AS room_nights,
@@ -77,20 +76,20 @@ router.get('/dashboard', async (req, res) => {
     const monthRevenue = Number(monthQ.rows[0].revenue);
     const roomNights   = monthQ.rows[0].room_nights;
 
-    const expQ = await pool.query(
+    const expQ = await req.db.query(
       `SELECT COALESCE(SUM(amount),0) AS total
          FROM expenses WHERE spent_on >= date_trunc('month', CURRENT_DATE)`
     );
     const monthExpenses = Number(expQ.rows[0].total);
 
-    const srcQ = await pool.query(
+    const srcQ = await req.db.query(
       `SELECT source, COALESCE(SUM(total_amount),0) AS revenue, COUNT(*) AS bookings
          FROM bookings
         WHERE status <> 'cancelled' AND check_in >= date_trunc('month', CURRENT_DATE)
         GROUP BY source ORDER BY revenue DESC`
     );
 
-    const recentQ = await pool.query(
+    const recentQ = await req.db.query(
       `SELECT b.id, b.reference, g.full_name AS guest, rt.name AS room, rm.room_number,
               b.check_in, b.check_out, b.total_amount, b.status, b.source
          FROM bookings b
@@ -134,7 +133,7 @@ router.get('/dashboard', async (req, res) => {
 // GET /api/admin/bookings?status=&from=&to=
 router.get('/bookings', async (req, res) => {
   // Auto-checkout any checked_in bookings whose check_out date has passed
-  await pool.query(`
+  await req.db.query(`
     UPDATE bookings SET status = 'checked_out'
      WHERE status = 'checked_in' AND check_out::date < CURRENT_DATE
   `).catch(() => {});
@@ -147,7 +146,7 @@ router.get('/bookings', async (req, res) => {
   if (to)     { params.push(to);     where.push(`b.check_in  <= $${params.length}`); }
   const clause = where.length ? 'WHERE ' + where.join(' AND ') : '';
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT b.id, b.reference, g.full_name AS guest, g.email, g.phone,
               rt.name AS room, rm.room_number, b.check_in, b.check_out, b.num_guests, b.nights,
               b.total_amount, b.advance_paid, b.pending_amount, b.payment_status, b.payment_method,
@@ -175,10 +174,10 @@ router.patch('/bookings/:id/status', async (req, res) => {
   const allowed = ['confirmed', 'checked_in', 'checked_out', 'cancelled'];
   if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status' });
 
-  const client = await pool.connect();
+  const client = await req.db.connect();
   try {
     await client.query('BEGIN');
-    const cur = await client.query('SELECT * FROM bookings WHERE id = $1 FOR UPDATE', [req.params.id]);
+    const cur = await client.query('SELECT * FROM bookings WHERE id = $1 AND tenant_id = $2 FOR UPDATE', [req.params.id, req.tenant.id]);
     if (!cur.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Booking not found' }); }
     const bk = cur.rows[0];
 
@@ -268,7 +267,7 @@ router.patch('/bookings/:id/status', async (req, res) => {
 
     // WhatsApp dispatch notification (after commit, non-blocking)
     if (status === 'checked_out' && dispatchedEmployee?.phone) {
-      const rmQ2 = await pool.query('SELECT room_number FROM rooms WHERE id=$1', [bk.room_id]);
+      const rmQ2 = await req.db.query('SELECT room_number FROM rooms WHERE id=$1', [bk.room_id]);
       const roomNum2 = rmQ2.rows[0]?.room_number || bk.room_id;
       sendWhatsApp(
         dispatchedEmployee.phone,
@@ -277,7 +276,7 @@ router.patch('/bookings/:id/status', async (req, res) => {
     }
 
     if (status === 'checked_in') {
-      pool.query(
+      req.db.query(
         `SELECT b.*, g.full_name AS guest, g.email, g.phone,
                 rt.name AS room, rt.code
            FROM bookings b
@@ -289,12 +288,12 @@ router.patch('/bookings/:id/status', async (req, res) => {
         const booking = r.rows[0];
         if (!booking) return; // already sent at booking confirmation — skip
         await sendAdvanceReceiptEmail(booking).catch(err => console.error('[admin] Advance receipt on check-in failed:', err.message));
-        await pool.query('UPDATE bookings SET invoice_sent_at = now() WHERE id = $1', [req.params.id]).catch(() => {});
+        await req.db.query('UPDATE bookings SET invoice_sent_at = now() WHERE id = $1', [req.params.id]).catch(() => {});
       }).catch(() => {});
     }
 
     if (status === 'cancelled') {
-      pool.query(
+      req.db.query(
         `SELECT g.full_name, rt.name AS room_type_name
            FROM bookings b
            JOIN guests g ON g.id = b.guest_id
@@ -302,6 +301,7 @@ router.patch('/bookings/:id/status', async (req, res) => {
           WHERE b.id = $1`,
         [req.params.id]
       ).then(r => sendCancellationAlert({
+        tenant_id: req.tenant.id,
         bookingRef: upd.rows[0].reference,
         guestName: r.rows[0]?.full_name || 'Guest',
         roomTypeName: r.rows[0]?.room_type_name || '',
@@ -314,7 +314,7 @@ router.patch('/bookings/:id/status', async (req, res) => {
     }
 
     if (status === 'checked_out') {
-      pool.query(
+      req.db.query(
         `SELECT b.*, g.full_name AS guest, g.email, g.phone,
                 rt.name AS room, rt.code, b.guest_id
            FROM bookings b
@@ -331,13 +331,13 @@ router.patch('/bookings/:id/status', async (req, res) => {
         const feedbackToken = require('crypto').randomUUID();
         const baseUrl = process.env.FEEDBACK_BASE_URL || 'http://localhost:5173/feedback';
         try {
-          await pool.query(
+          await req.db.query(
             `INSERT INTO guest_feedback (booking_id, guest_id, token)
              VALUES ($1, $2, $3) ON CONFLICT (token) DO NOTHING`,
             [booking.id, booking.guest_id, feedbackToken]
           );
           const feedbackUrl = `${baseUrl}/${feedbackToken}`;
-          sendFeedbackEmail(booking.email, booking.guest, feedbackUrl, booking.phone, booking.reference)
+          sendFeedbackEmail(booking.email, booking.guest, feedbackUrl, booking.phone, booking.reference, req.tenant.id)
             .catch(err => console.error('[admin] Feedback email failed:', err.message));
         } catch (e) {
           console.error('[admin] Feedback row insert failed:', e.message);
@@ -363,7 +363,7 @@ router.patch('/bookings/:id/status', async (req, res) => {
 // GET /api/admin/rooms/tasks  → pending/in-progress tasks grouped by room_id
 router.get('/rooms/tasks', async (req, res) => {
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT t.room_id, t.task_id, t.title, t.status, t.priority,
               e.first_name || ' ' || COALESCE(e.last_name,'') AS assigned_name
          FROM tasks t
@@ -389,7 +389,7 @@ router.get('/my-tasks', async (req, res) => {
   const empId = req.query.employee_id || req.user?.employee_id;
   if (!empId) return res.status(400).json({ error: 'employee_id required' });
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT er.routine_id, er.task_name, er.scheduled_time, er.status,
               er.photo_verification_url, er.booking_id, er.room_id,
               r.room_number, g.full_name AS guest_name
@@ -412,22 +412,22 @@ router.get('/my-tasks', async (req, res) => {
 router.patch('/my-tasks/:id/complete', async (req, res) => {
   const { photo_url } = req.body || {};
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `UPDATE employee_routines
           SET status = 'Verified', completed_at = now(), photo_verification_url = COALESCE($1, photo_verification_url)
-        WHERE routine_id = $2
+        WHERE routine_id = $2 AND tenant_id = $3
         RETURNING routine_id, status, room_id`,
-      [photo_url || null, req.params.id]
+      [photo_url || null, req.params.id, req.tenant.id]
     );
     if (!rows[0]) return res.status(404).json({ error: 'Task not found' });
     // Mark room back to available when housekeeping completes
     if (rows[0].room_id) {
-      await pool.query(
+      await req.db.query(
         `UPDATE tasks SET status = 'Completed', completed_at = now()
           WHERE room_id = $1 AND status IN ('Pending','In-Progress')`,
         [rows[0].room_id]
       );
-      await pool.query('UPDATE rooms SET status = $1 WHERE id = $2', ['available', rows[0].room_id]);
+      await req.db.query('UPDATE rooms SET status = $1 WHERE id = $2', ['available', rows[0].room_id]);
     }
     res.json(rows[0]);
   } catch (err) {
@@ -439,7 +439,7 @@ router.patch('/my-tasks/:id/complete', async (req, res) => {
 // GET /api/admin/bookings/:id/dispute-package  → PDF download
 router.get('/bookings/:id/dispute-package', requireOwner, async (req, res) => {
   try {
-    const bkQ = await pool.query(
+    const bkQ = await req.db.query(
       `SELECT b.*, g.full_name, g.phone, g.email, g.kyc_type, g.kyc_number,
               g.addr1, g.addr2, g.state, g.pincode,
               rt.name AS room_type, rm.room_number,
@@ -449,15 +449,15 @@ router.get('/bookings/:id/dispute-package', requireOwner, async (req, res) => {
          JOIN room_types rt ON rt.id = b.room_type_id
          LEFT JOIN rooms rm ON rm.id = b.room_id
          LEFT JOIN employee_routines er ON er.booking_id = b.id AND er.status = 'Verified'
-        WHERE b.id = $1
+        WHERE b.id = $1 AND b.tenant_id = $2
         ORDER BY er.completed_at DESC
         LIMIT 1`,
-      [req.params.id]
+      [req.params.id, req.tenant.id]
     );
     if (!bkQ.rows[0]) return res.status(404).json({ error: 'Booking not found' });
     const bk = bkQ.rows[0];
 
-    const ptQ = await pool.query(
+    const ptQ = await req.db.query(
       `SELECT amount, gst_amount, payment_method, gateway_reference_token, status, created_at
          FROM payment_transactions WHERE booking_id=$1 ORDER BY created_at`,
       [req.params.id]
@@ -534,7 +534,7 @@ router.get('/calendar', async (req, res) => {
   const month = req.query.month || new Date().toISOString().slice(0, 7);
   const first = month + '-01';
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT stay_date,
               SUM(total_units)::int  AS total,
               SUM(booked_units)::int AS booked
@@ -554,7 +554,7 @@ router.get('/calendar', async (req, res) => {
 // GET /api/admin/rooms  â†' room types (with today's metrics) + physical rooms
 router.get('/rooms', async (req, res) => {
   try {
-    const types = await pool.query(
+    const types = await req.db.query(
       `SELECT rt.id, rt.code, rt.name, rt.description, rt.base_rate, rt.total_rooms,
               rt.max_occupancy, rt.amenities,
               inv.rate AS rate_today,
@@ -563,7 +563,7 @@ router.get('/rooms', async (req, res) => {
          LEFT JOIN inventory inv ON inv.room_type_id = rt.id AND inv.stay_date = CURRENT_DATE
         ORDER BY rt.base_rate`
     );
-    const physical = await pool.query(
+    const physical = await req.db.query(
       `SELECT r.id, r.room_number, r.floor, r.status, r.maintenance_until,
               r.room_type_id, rt.name AS type
          FROM rooms r JOIN room_types rt ON rt.id = r.room_type_id
@@ -571,7 +571,7 @@ router.get('/rooms', async (req, res) => {
     );
 
     // Derive live occupancy from today's active bookings per room type
-    const occQ = await pool.query(
+    const occQ = await req.db.query(
       `SELECT room_type_id,
               COUNT(*) FILTER (WHERE check_in < CURRENT_DATE)  AS stay_over,
               COUNT(*) FILTER (WHERE check_in = CURRENT_DATE)  AS checked_in_today
@@ -618,7 +618,7 @@ router.get('/rooms/available', async (req, res) => {
   if (!room_type_id || !check_in || !check_out)
     return res.status(400).json({ error: 'room_type_id, check_in and check_out are required' });
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT r.id, r.room_number
          FROM rooms r
         WHERE r.room_type_id = $1
@@ -655,7 +655,7 @@ router.post('/rooms/rate/pattern', async (req, res) => {
         if (dayNums.includes(d.getDay())) dates.push(d.toISOString().slice(0, 10));
       }
       if (!dates.length) continue;
-      const { rowCount } = await pool.query(
+      const { rowCount } = await req.db.query(
         `UPDATE inventory SET rate = $1 WHERE room_type_id = $2 AND stay_date = ANY($3::date[])`,
         [slot.rate, room_type_id, dates]
       );
@@ -670,7 +670,7 @@ router.patch('/rooms/rate', async (req, res) => {
   const { room_type_id, from, to, rate } = req.body || {};
   if (!room_type_id || !from || !to || rate == null) return res.status(400).json({ error: 'room_type_id, from, to and rate are required' });
   try {
-    const { rowCount } = await pool.query(
+    const { rowCount } = await req.db.query(
       `UPDATE inventory SET rate = $1
         WHERE room_type_id = $2 AND stay_date >= $3 AND stay_date <= $4`,
       [rate, room_type_id, from, to]
@@ -690,9 +690,9 @@ router.patch('/rooms/:id/status', async (req, res) => {
   if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status' });
   try {
     const until = status === 'maintenance' ? (maintenance_until || null) : null;
-    const { rows } = await pool.query(
-      'UPDATE rooms SET status = $1, maintenance_until = $2 WHERE id = $3 RETURNING id, room_number, status, maintenance_until',
-      [status, until, req.params.id]
+    const { rows } = await req.db.query(
+      'UPDATE rooms SET status = $1, maintenance_until = $2 WHERE id = $3 AND tenant_id = $4 RETURNING id, room_number, status, maintenance_until',
+      [status, until, req.params.id, req.tenant.id]
     );
     if (!rows[0]) return res.status(404).json({ error: 'Room not found' });
     res.json(rows[0]);
@@ -708,7 +708,7 @@ router.post('/room-types', requireOwner, async (req, res) => {
   if (!code || !name || !max_occupancy || base_rate == null)
     return res.status(400).json({ error: 'code, name, max_occupancy and base_rate are required' });
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `INSERT INTO room_types (code, name, description, max_occupancy, base_rate, total_rooms, amenities)
        VALUES ($1,$2,$3,$4,$5,0,$6) RETURNING *`,
       [code, name, description || null, max_occupancy, base_rate, amenities || []]
@@ -724,10 +724,10 @@ router.post('/room-types', requireOwner, async (req, res) => {
 router.put('/room-types/:id', requireOwner, async (req, res) => {
   const { name, description, max_occupancy, base_rate, amenities } = req.body || {};
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `UPDATE room_types SET name=$1, description=$2, max_occupancy=$3, base_rate=$4, amenities=$5
-       WHERE id=$6 RETURNING *`,
-      [name, description || null, max_occupancy, base_rate, amenities || [], req.params.id]
+       WHERE id=$6 AND tenant_id=$7 RETURNING *`,
+      [name, description || null, max_occupancy, base_rate, amenities || [], req.params.id, req.tenant.id]
     );
     if (!rows[0]) return res.status(404).json({ error: 'Room type not found' });
     res.json(rows[0]);
@@ -739,10 +739,10 @@ router.put('/room-types/:id', requireOwner, async (req, res) => {
 // DELETE /api/admin/room-types/:id  (owner only, only if no rooms attached)
 router.delete('/room-types/:id', requireOwner, async (req, res) => {
   try {
-    const check = await pool.query('SELECT COUNT(*)::int AS n FROM rooms WHERE room_type_id=$1', [req.params.id]);
+    const check = await req.db.query('SELECT COUNT(*)::int AS n FROM rooms WHERE room_type_id=$1 AND tenant_id=$2', [req.params.id, req.tenant.id]);
     if (check.rows[0].n > 0)
       return res.status(409).json({ error: 'Remove all rooms in this category first' });
-    const { rowCount } = await pool.query('DELETE FROM room_types WHERE id=$1', [req.params.id]);
+    const { rowCount } = await req.db.query('DELETE FROM room_types WHERE id=$1 AND tenant_id=$2', [req.params.id, req.tenant.id]);
     if (!rowCount) return res.status(404).json({ error: 'Room type not found' });
     res.json({ ok: true });
   } catch (err) {
@@ -756,7 +756,7 @@ router.post('/rooms-physical', requireOwner, async (req, res) => {
   const { room_type_id, room_number, floor } = req.body || {};
   if (!room_type_id || !room_number)
     return res.status(400).json({ error: 'room_type_id and room_number are required' });
-  const client = await pool.connect();
+  const client = await req.db.connect();
   try {
     await client.query('BEGIN');
     const { rows } = await client.query(
@@ -779,10 +779,10 @@ router.post('/rooms-physical', requireOwner, async (req, res) => {
 
 // DELETE /api/admin/rooms-physical/:id  (owner only)
 router.delete('/rooms-physical/:id', requireOwner, async (req, res) => {
-  const client = await pool.connect();
+  const client = await req.db.connect();
   try {
     await client.query('BEGIN');
-    const cur = await client.query('SELECT * FROM rooms WHERE id=$1 FOR UPDATE', [req.params.id]);
+    const cur = await client.query('SELECT * FROM rooms WHERE id=$1 AND tenant_id=$2 FOR UPDATE', [req.params.id, req.tenant.id]);
     if (!cur.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Room not found' }); }
     const activeBookings = await client.query(
       `SELECT 1 FROM bookings WHERE room_id=$1 AND status IN ('confirmed','checked_in') LIMIT 1`,
@@ -792,7 +792,7 @@ router.delete('/rooms-physical/:id', requireOwner, async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: 'Room has active bookings — cannot delete' });
     }
-    await client.query('DELETE FROM rooms WHERE id=$1', [req.params.id]);
+    await client.query('DELETE FROM rooms WHERE id=$1 AND tenant_id=$2', [req.params.id, req.tenant.id]);
     await client.query(
       'UPDATE room_types SET total_rooms = GREATEST(total_rooms - 1, 0) WHERE id = $1',
       [cur.rows[0].room_type_id]
@@ -809,7 +809,7 @@ router.delete('/rooms-physical/:id', requireOwner, async (req, res) => {
 // GET /api/admin/guests
 router.get('/guests', async (req, res) => {
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT g.id, g.full_name, g.email, g.phone, g.address,
               g.addr1, g.addr2, g.state, g.pincode,
               g.kyc_type, g.kyc_number, g.created_at,
@@ -831,7 +831,7 @@ router.get('/guests/by-kyc', async (req, res) => {
   const { kyc_number } = req.query;
   if (!kyc_number) return res.status(400).json({ error: 'kyc_number is required' });
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT g.id, g.full_name, g.email, g.phone, g.address,
               g.addr1, g.addr2, g.state, g.pincode,
               g.kyc_type, g.kyc_number,
@@ -856,7 +856,7 @@ router.get('/guests/by-kyc', async (req, res) => {
 // GET /api/admin/expenses
 router.get('/expenses', async (req, res) => {
   try {
-    const { rows } = await pool.query('SELECT * FROM expenses ORDER BY spent_on DESC, id DESC LIMIT 200');
+    const { rows } = await req.db.query('SELECT * FROM expenses ORDER BY spent_on DESC, id DESC LIMIT 200');
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -866,7 +866,7 @@ router.get('/expenses', async (req, res) => {
 // DELETE /api/admin/expenses  (owner only) — delete ALL expenses
 router.delete('/expenses', requireOwner, async (req, res) => {
   try {
-    await pool.query('DELETE FROM expenses');
+    await req.db.query('DELETE FROM expenses WHERE tenant_id=$1', [req.tenant.id]);
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -874,7 +874,7 @@ router.delete('/expenses', requireOwner, async (req, res) => {
 // DELETE /api/admin/expenses/:id  (owner only)
 router.delete('/expenses/:id', requireOwner, async (req, res) => {
   try {
-    const { rowCount } = await pool.query('DELETE FROM expenses WHERE id=$1', [req.params.id]);
+    const { rowCount } = await req.db.query('DELETE FROM expenses WHERE id=$1 AND tenant_id=$2', [req.params.id, req.tenant.id]);
     if (!rowCount) return res.status(404).json({ error: 'Expense not found' });
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -885,7 +885,7 @@ router.post('/expenses', async (req, res) => {
   const { category, description, amount, spent_on } = req.body || {};
   if (!category || amount == null) return res.status(400).json({ error: 'category and amount are required' });
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `INSERT INTO expenses (category, description, amount, spent_on)
        VALUES ($1, $2, $3, COALESCE($4, CURRENT_DATE)) RETURNING *`,
       [category, description || null, amount, spent_on || null]
@@ -900,7 +900,7 @@ router.post('/expenses', async (req, res) => {
 // GET /api/admin/users
 router.get('/users', requireAdmin, async (req, res) => {
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       'SELECT id, username, full_name, role, is_blocked, created_at FROM users ORDER BY id'
     );
     res.json(rows);
@@ -914,9 +914,9 @@ router.patch('/users/:id/block', requireOwner, async (req, res) => {
   const { is_blocked } = req.body || {};
   if (Number(req.params.id) === req.user.id) return res.status(400).json({ error: 'Cannot block yourself' });
   try {
-    const { rows } = await pool.query(
-      'UPDATE users SET is_blocked=$1 WHERE id=$2 RETURNING id, username, is_blocked',
-      [!!is_blocked, req.params.id]
+    const { rows } = await req.db.query(
+      'UPDATE users SET is_blocked=$1 WHERE id=$2 AND tenant_id=$3 RETURNING id, username, is_blocked',
+      [!!is_blocked, req.params.id, req.tenant.id]
     );
     if (!rows[0]) return res.status(404).json({ error: 'User not found' });
     res.json(rows[0]);
@@ -927,7 +927,7 @@ router.patch('/users/:id/block', requireOwner, async (req, res) => {
 router.delete('/users/:id', requireOwner, async (req, res) => {
   if (Number(req.params.id) === req.user.id) return res.status(400).json({ error: 'Cannot delete yourself' });
   try {
-    const { rowCount } = await pool.query('DELETE FROM users WHERE id=$1', [req.params.id]);
+    const { rowCount } = await req.db.query('DELETE FROM users WHERE id=$1 AND tenant_id=$2', [req.params.id, req.tenant.id]);
     if (!rowCount) return res.status(404).json({ error: 'User not found' });
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -939,7 +939,7 @@ router.post('/users', requireAdmin, async (req, res) => {
   if (!username || !password) return res.status(400).json({ error: 'username and password are required' });
   try {
     const hash = await bcrypt.hash(password, 10);
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `INSERT INTO users (username, full_name, password_hash, role)
        VALUES ($1, $2, $3, $4) RETURNING id, username, full_name, role`,
       [username, full_name || null, hash, role || 'staff']
@@ -959,7 +959,7 @@ router.post('/bookings/check-conflict', async (req, res) => {
   if (!room_type_id || !check_in || !check_out)
     return res.status(400).json({ error: 'room_type_id, check_in and check_out are required' });
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT stay_date, total_units, booked_units, is_closed
          FROM inventory
         WHERE room_type_id = $1 AND stay_date >= $2 AND stay_date < $3
@@ -977,7 +977,7 @@ router.post('/bookings/check-conflict', async (req, res) => {
 // GET /api/admin/conflict-log
 router.get('/conflict-log', async (req, res) => {
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT id, guest_name AS triggered_by, message, status, sent_at
          FROM notification_logs
         WHERE type = 'overbooking_attempt'
@@ -1002,7 +1002,7 @@ router.post('/bookings/new', async (req, res) => {
   const nights = Math.round((new Date(check_out) - new Date(check_in)) / 86400000);
   if (!(nights > 0)) return res.status(400).json({ error: 'check_out must be after check_in' });
 
-  const client = await pool.connect();
+  const client = await req.db.connect();
   try {
     await client.query('BEGIN');
 
@@ -1029,7 +1029,7 @@ router.post('/bookings/new', async (req, res) => {
     if (inv.rows.length !== nights) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'NO_INVENTORY' }); }
     if (inv.rows.some(r => r.is_closed || r.booked_units >= r.total_units)) {
       await client.query('ROLLBACK');
-      sendOverbookingAlert({ roomTypeId: room_type_id, checkIn: check_in, checkOut: check_out, triggeredBy: req.user?.username || 'staff' }).catch(() => {});
+      sendOverbookingAlert({ tenantId: req.tenant.id, roomTypeId: room_type_id, checkIn: check_in, checkOut: check_out, triggeredBy: req.user?.username || 'staff' }).catch(() => {});
       return res.status(409).json({ error: 'NO_AVAILABILITY', message: 'Sold out for those dates.' });
     }
 
@@ -1050,7 +1050,7 @@ router.post('/bookings/new', async (req, res) => {
       );
       if (!roomCheck.rows[0]) {
         await client.query('ROLLBACK');
-        sendOverbookingAlert({ roomTypeId: room_type_id, checkIn: check_in, checkOut: check_out, triggeredBy: req.user?.username || 'staff' }).catch(() => {});
+        sendOverbookingAlert({ tenantId: req.tenant.id, roomTypeId: room_type_id, checkIn: check_in, checkOut: check_out, triggeredBy: req.user?.username || 'staff' }).catch(() => {});
         return res.status(409).json({ error: 'ROOM_TAKEN', message: 'That room is already booked for those dates.' });
       }
     }
@@ -1085,7 +1085,7 @@ router.post('/bookings/new', async (req, res) => {
     await client.query('COMMIT');
 
     // Return full detail for the receipt.
-    const full = await pool.query(
+    const full = await req.db.query(
       `SELECT b.*, g.full_name AS guest, g.phone, g.email, g.address,
               rt.name AS room, rt.code, rm.room_number
          FROM bookings b
@@ -1098,7 +1098,7 @@ router.post('/bookings/new', async (req, res) => {
     sendBookingNotifications(full.rows[0]).catch(() => {});
     // Send advance receipt PDF immediately on booking confirmation (covers both confirmed & walk-in check-in)
     sendAdvanceReceiptEmail(full.rows[0], { skipWa: true }).catch(err => console.error('[admin] Advance receipt on booking failed:', err.message));
-    pool.query('UPDATE bookings SET invoice_sent_at = now() WHERE id = $1', [r.rows[0].id]).catch(() => {});
+    req.db.query('UPDATE bookings SET invoice_sent_at = now() WHERE id = $1', [r.rows[0].id]).catch(() => {});
 
     res.status(201).json({ ok: true, booking: full.rows[0] });
   } catch (err) {
@@ -1113,7 +1113,7 @@ router.post('/bookings/new', async (req, res) => {
 /* ---------- GET ONE BOOKING ---------- */
 router.get('/bookings/:id', async (req, res) => {
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT b.*, g.full_name AS guest, g.phone, g.email, g.address,
               g.addr1, g.addr2, g.state, g.pincode,
               rt.name AS room, rt.code, rt.id AS room_type_id, rm.room_number
@@ -1121,7 +1121,7 @@ router.get('/bookings/:id', async (req, res) => {
          JOIN guests g ON g.id=b.guest_id
          JOIN room_types rt ON rt.id=b.room_type_id
          LEFT JOIN rooms rm ON rm.id=b.room_id
-        WHERE b.id=$1`, [req.params.id]
+        WHERE b.id=$1 AND b.tenant_id=$2`, [req.params.id, req.tenant.id]
     );
     if (!rows[0]) return res.status(404).json({ error: 'Booking not found' });
     res.json(rows[0]);
@@ -1130,7 +1130,7 @@ router.get('/bookings/:id', async (req, res) => {
 
 /* ---------- DELETE ALL BOOKINGS (owner only) ---------- */
 router.delete('/bookings', requireOwner, async (req, res) => {
-  const client = await pool.connect();
+  const client = await req.db.connect();
   try {
     await client.query('BEGIN');
     // Release inventory for all non-cancelled bookings
@@ -1145,7 +1145,7 @@ router.delete('/bookings', requireOwner, async (req, res) => {
       ) sub
       WHERE i.room_type_id = sub.room_type_id AND i.stay_date = sub.d
     `);
-    await client.query('DELETE FROM bookings');
+    await client.query('DELETE FROM bookings WHERE tenant_id=$1', [req.tenant.id]);
     await client.query('COMMIT');
     res.json({ ok: true });
   } catch (err) {
@@ -1156,10 +1156,10 @@ router.delete('/bookings', requireOwner, async (req, res) => {
 
 /* ---------- DELETE BOOKING (owner only) ---------- */
 router.delete('/bookings/:id', requireOwner, async (req, res) => {
-  const client = await pool.connect();
+  const client = await req.db.connect();
   try {
     await client.query('BEGIN');
-    const cur = await client.query('SELECT * FROM bookings WHERE id=$1 FOR UPDATE', [req.params.id]);
+    const cur = await client.query('SELECT * FROM bookings WHERE id=$1 AND tenant_id=$2 FOR UPDATE', [req.params.id, req.tenant.id]);
     if (!cur.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Booking not found' }); }
     const bk = cur.rows[0];
     if (bk.status !== 'cancelled') {
@@ -1182,10 +1182,10 @@ router.delete('/bookings/:id', requireOwner, async (req, res) => {
 // PUT /api/admin/bookings/:id  { check_in, check_out, additional_payment, tax_percentage, status }
 router.put('/bookings/:id', async (req, res) => {
   const body = req.body || {};
-  const client = await pool.connect();
+  const client = await req.db.connect();
   try {
     await client.query('BEGIN');
-    const cur = await client.query('SELECT * FROM bookings WHERE id=$1 FOR UPDATE', [req.params.id]);
+    const cur = await client.query('SELECT * FROM bookings WHERE id=$1 AND tenant_id=$2 FOR UPDATE', [req.params.id, req.tenant.id]);
     if (!cur.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Booking not found' }); }
     const bk = cur.rows[0];
 
@@ -1256,10 +1256,11 @@ router.put('/bookings/:id', async (req, res) => {
     await client.query('COMMIT');
 
     if (Number(body.additional_payment) > 0) {
-      pool.query(
+      req.db.query(
         `SELECT g.full_name, g.phone FROM bookings b JOIN guests g ON g.id = b.guest_id WHERE b.id = $1`,
         [req.params.id]
       ).then(r => sendBalancePaymentAlert({
+        tenant_id: req.tenant.id,
         bookingRef: upd.rows[0].reference,
         guestName: r.rows[0]?.full_name || 'Guest',
         amountCollected: Number(body.additional_payment),
@@ -1284,7 +1285,7 @@ router.post('/guests', async (req, res) => {
   const g = req.body || {};
   if (!g.full_name) return res.status(400).json({ error: 'Name is required' });
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `INSERT INTO guests (full_name, phone, email, address, addr1, addr2, state, pincode, kyc_type, kyc_number)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
       [g.full_name, g.phone || null, g.email || null, g.address || null,
@@ -1297,13 +1298,13 @@ router.post('/guests', async (req, res) => {
 
 router.delete('/guests/:id', requireOwner, async (req, res) => {
   try {
-    const { rows: bookings } = await pool.query(
-      'SELECT id FROM bookings WHERE guest_id=$1 LIMIT 1', [req.params.id]
+    const { rows: bookings } = await req.db.query(
+      'SELECT id FROM bookings WHERE guest_id=$1 AND tenant_id=$2 LIMIT 1', [req.params.id, req.tenant.id]
     );
     if (bookings.length > 0) {
       return res.status(409).json({ error: 'Cannot delete a guest who has bookings. Remove their bookings first.' });
     }
-    const { rowCount } = await pool.query('DELETE FROM guests WHERE id=$1', [req.params.id]);
+    const { rowCount } = await req.db.query('DELETE FROM guests WHERE id=$1 AND tenant_id=$2', [req.params.id, req.tenant.id]);
     if (!rowCount) return res.status(404).json({ error: 'Guest not found' });
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -1311,16 +1312,16 @@ router.delete('/guests/:id', requireOwner, async (req, res) => {
 
 router.get('/guests/:id/bookings', async (req, res) => {
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT b.id, b.reference, b.check_in, b.check_out, b.num_guests,
               b.total_amount, b.status, b.created_at,
               rt.name AS room_type, r.room_number
          FROM bookings b
          LEFT JOIN room_types rt ON rt.id = b.room_type_id
          LEFT JOIN rooms r ON r.id = b.room_id
-        WHERE b.guest_id = $1
+        WHERE b.guest_id = $1 AND b.tenant_id = $2
         ORDER BY b.check_in DESC`,
-      [req.params.id]
+      [req.params.id, req.tenant.id]
     );
     res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -1329,15 +1330,15 @@ router.get('/guests/:id/bookings', async (req, res) => {
 router.put('/guests/:id', async (req, res) => {
   const g = req.body || {};
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `UPDATE guests SET full_name=$1, phone=$2, email=$3, address=$4,
               addr1=$5, addr2=$6, state=$7, pincode=$8,
               kyc_type=$9, kyc_number=$10
-        WHERE id=$11 RETURNING *`,
+        WHERE id=$11 AND tenant_id=$12 RETURNING *`,
       [g.full_name, g.phone || null, g.email || null, g.address || null,
        g.addr1 || null, g.addr2 || null, g.state || null, g.pincode || null,
        g.kyc_type || null, g.kyc_number || null,
-       req.params.id]
+       req.params.id, req.tenant.id]
     );
     if (!rows[0]) return res.status(404).json({ error: 'Guest not found' });
     res.json(rows[0]);
@@ -1348,7 +1349,7 @@ router.put('/guests/:id', async (req, res) => {
 /* ---------------- EMPLOYEES ---------------- */
 router.get('/employees', async (req, res) => {
   try {
-    const { rows } = await pool.query('SELECT * FROM employees ORDER BY first_name, last_name');
+    const { rows } = await req.db.query('SELECT * FROM employees ORDER BY first_name, last_name');
     // Normalise: ensure every row has a `roles` array
     rows.forEach(r => {
       if (!r.roles || r.roles.length === 0) r.roles = [r.role || 'Front Desk'];
@@ -1362,7 +1363,7 @@ router.post('/employees', async (req, res) => {
   if (!first_name) return res.status(400).json({ error: 'first_name is required' });
   const rolesArr = Array.isArray(roles) && roles.length > 0 ? roles : [role || 'Front Desk'];
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `INSERT INTO employees (first_name, last_name, role, roles, phone, is_active)
        VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
       [first_name, last_name || null, rolesArr[0], rolesArr, phone || null, is_active !== false]
@@ -1377,10 +1378,10 @@ router.put('/employees/:id', async (req, res) => {
   const { first_name, last_name, roles, role, phone, is_active } = req.body || {};
   const rolesArr = Array.isArray(roles) && roles.length > 0 ? roles : [role || 'Front Desk'];
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `UPDATE employees SET first_name=$1, last_name=$2, role=$3, roles=$4, phone=$5, is_active=$6
-       WHERE employee_id=$7 RETURNING *`,
-      [first_name, last_name || null, rolesArr[0], rolesArr, phone || null, is_active !== false, req.params.id]
+       WHERE employee_id=$7 AND tenant_id=$8 RETURNING *`,
+      [first_name, last_name || null, rolesArr[0], rolesArr, phone || null, is_active !== false, req.params.id, req.tenant.id]
     );
     if (!rows[0]) return res.status(404).json({ error: 'Employee not found' });
     const row = rows[0];
@@ -1391,7 +1392,7 @@ router.put('/employees/:id', async (req, res) => {
 
 router.delete('/employees/:id', requireOwner, async (req, res) => {
   try {
-    const { rows } = await pool.query('DELETE FROM employees WHERE employee_id=$1 RETURNING *', [req.params.id]);
+    const { rows } = await req.db.query('DELETE FROM employees WHERE employee_id=$1 AND tenant_id=$2 RETURNING *', [req.params.id, req.tenant.id]);
     if (!rows[0]) return res.status(404).json({ error: 'Employee not found' });
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -1407,12 +1408,12 @@ router.put('/employees/:id/credentials', requireAdmin, async (req, res) => {
     if (password) {
       updates.password_hash = await bcrypt.hash(password, 10);
     }
-    const { rows } = await pool.query(
-      `UPDATE employees SET username=$1 ${password ? ', password_hash=$3' : ''}
-         WHERE employee_id=$2 RETURNING employee_id, username`,
+    const { rows } = await req.db.query(
+      `UPDATE employees SET username=$1 ${password ? ', password_hash=$4' : ''}
+         WHERE employee_id=$2 AND tenant_id=$3 RETURNING employee_id, username`,
       password
-        ? [username, req.params.id, updates.password_hash]
-        : [username, req.params.id]
+        ? [username, req.params.id, req.tenant.id, updates.password_hash]
+        : [username, req.params.id, req.tenant.id]
     );
     if (!rows[0]) return res.status(404).json({ error: 'Employee not found' });
     res.json({ ok: true, username: rows[0].username });
@@ -1425,7 +1426,7 @@ router.put('/employees/:id/credentials', requireAdmin, async (req, res) => {
 /* ---------------- SHIFTS ---------------- */
 router.get('/shifts', async (req, res) => {
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT s.shift_id AS id, s.employee_id, s.shift_date, s.start_time, s.end_time, s.created_at,
               e.first_name, e.last_name, e.role
          FROM shift_schedules s JOIN employees e ON e.employee_id = s.employee_id
@@ -1441,7 +1442,7 @@ router.post('/shifts', async (req, res) => {
   if (!employee_id || !shift_date) return res.status(400).json({ error: 'employee_id and shift_date are required' });
   if (!start_time || !end_time) return res.status(400).json({ error: 'start_time and end_time are required' });
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `INSERT INTO shift_schedules (employee_id, shift_date, start_time, end_time)
        VALUES ($1,$2,$3,$4)
        ON CONFLICT (employee_id, shift_date) DO UPDATE SET start_time = EXCLUDED.start_time, end_time = EXCLUDED.end_time
@@ -1456,7 +1457,7 @@ router.delete('/shifts', async (req, res) => {
   const { employee_id, shift_date } = req.body || {};
   if (!employee_id || !shift_date) return res.status(400).json({ error: 'employee_id and shift_date are required' });
   try {
-    await pool.query(
+    await req.db.query(
       `DELETE FROM shift_schedules WHERE employee_id=$1 AND shift_date=$2`,
       [employee_id, shift_date]
     );
@@ -1468,7 +1469,7 @@ router.delete('/shifts', async (req, res) => {
 // GET /api/admin/shift-master — list all employees with their default shift times
 router.get('/shift-master', async (req, res) => {
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT employee_id, first_name, last_name, role, phone, is_active,
               default_start_time, default_end_time
          FROM employees ORDER BY first_name, last_name`
@@ -1481,11 +1482,11 @@ router.get('/shift-master', async (req, res) => {
 router.put('/shift-master/:id', requireOwner, async (req, res) => {
   const { default_start_time, default_end_time } = req.body || {};
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `UPDATE employees SET default_start_time=$1, default_end_time=$2
-         WHERE employee_id=$3
+         WHERE employee_id=$3 AND tenant_id=$4
        RETURNING employee_id, first_name, last_name, default_start_time, default_end_time`,
-      [default_start_time || null, default_end_time || null, req.params.id]
+      [default_start_time || null, default_end_time || null, req.params.id, req.tenant.id]
     );
     if (!rows[0]) return res.status(404).json({ error: 'Employee not found' });
     res.json(rows[0]);
@@ -1495,7 +1496,7 @@ router.put('/shift-master/:id', requireOwner, async (req, res) => {
 /* ---------------- TASKS ---------------- */
 router.get('/tasks', async (req, res) => {
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT t.*,
               CASE WHEN e.employee_id IS NOT NULL
                    THEN e.first_name || ' ' || COALESCE(e.last_name, '')
@@ -1512,7 +1513,7 @@ router.post('/tasks', async (req, res) => {
   const { title, description, assigned_to, priority, status, due_at, photo_required } = req.body || {};
   if (!title) return res.status(400).json({ error: 'title is required' });
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `INSERT INTO tasks (title, description, assigned_to, priority, status, due_at, photo_required)
        VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
       [title, description || null, assigned_to || null, priority || 'Medium', status || 'Pending', due_at || null, photo_required ?? false]
@@ -1528,12 +1529,12 @@ router.put('/tasks/:id', async (req, res) => {
   try {
     // Enforce photo requirement when completing
     if (has('status') && status === 'Completed') {
-      const { rows: tr } = await pool.query('SELECT photo_required FROM tasks WHERE task_id=$1', [req.params.id]);
+      const { rows: tr } = await req.db.query('SELECT photo_required FROM tasks WHERE task_id=$1', [req.params.id]);
       if (tr[0]?.photo_required && !photo_verification_url) {
         return res.status(400).json({ error: 'Photo evidence is required to complete this task.' });
       }
     }
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `UPDATE tasks SET
          title                  = CASE WHEN $1::boolean THEN $2 ELSE title END,
          description            = CASE WHEN $3::boolean THEN $4 ELSE description END,
@@ -1546,7 +1547,7 @@ router.put('/tasks/:id', async (req, res) => {
                                        ELSE completed_at END,
          photo_verification_url = CASE WHEN $13::boolean THEN $14 ELSE photo_verification_url END,
          photo_required         = CASE WHEN $16::boolean THEN $17 ELSE photo_required END
-       WHERE task_id = $15 RETURNING *`,
+       WHERE task_id = $15 AND tenant_id = $18 RETURNING *`,
       [
         has('title'),                    title                    || null,
         has('description'),              description              || null,
@@ -1557,13 +1558,14 @@ router.put('/tasks/:id', async (req, res) => {
         has('photo_verification_url'),   photo_verification_url   || null,
         req.params.id,
         has('photo_required'),           photo_required ?? false,
+        req.tenant.id,
       ]
     );
     if (!rows[0]) return res.status(404).json({ error: 'Task not found' });
 
     // Case 5: unlock room when linked task is marked Completed
     if (rows[0].status === 'Completed' && rows[0].room_id) {
-      await pool.query(
+      await req.db.query(
         'UPDATE rooms SET status = $1, maintenance_until = NULL WHERE id = $2',
         ['available', rows[0].room_id]
       );
@@ -1576,7 +1578,7 @@ router.put('/tasks/:id', async (req, res) => {
 /* ---------------- ROUTINES ---------------- */
 router.delete('/tasks/:id', requireOwner, async (req, res) => {
   try {
-    const { rows } = await pool.query('DELETE FROM tasks WHERE task_id=$1 RETURNING *', [req.params.id]);
+    const { rows } = await req.db.query('DELETE FROM tasks WHERE task_id=$1 AND tenant_id=$2 RETURNING *', [req.params.id, req.tenant.id]);
     if (!rows[0]) return res.status(404).json({ error: 'Task not found' });
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -1584,7 +1586,7 @@ router.delete('/tasks/:id', requireOwner, async (req, res) => {
 
 router.get('/routines', async (req, res) => {
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT r.*,
               e.first_name || ' ' || COALESCE(e.last_name, '') AS employee_name
          FROM employee_routines r
@@ -1600,7 +1602,7 @@ router.post('/routines', async (req, res) => {
   if (!employee_id || !task_name || !scheduled_time)
     return res.status(400).json({ error: 'employee_id, task_name and scheduled_time are required' });
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `INSERT INTO employee_routines (employee_id, task_name, scheduled_time, photo_required)
        VALUES ($1,$2,$3,$4) RETURNING *`,
       [employee_id, task_name, scheduled_time, photo_required ?? false]
@@ -1614,13 +1616,13 @@ router.put('/routines/:id', requireOwner, async (req, res) => {
   if (!employee_id || !task_name || !scheduled_time)
     return res.status(400).json({ error: 'employee_id, task_name and scheduled_time are required' });
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `UPDATE employee_routines
           SET employee_id = $1, task_name = $2, scheduled_time = $3,
               photo_required = COALESCE($5, photo_required)
-        WHERE routine_id = $4
+        WHERE routine_id = $4 AND tenant_id = $6
         RETURNING *`,
-      [employee_id, task_name, scheduled_time, req.params.id, photo_required ?? null]
+      [employee_id, task_name, scheduled_time, req.params.id, photo_required ?? null, req.tenant.id]
     );
     if (!rows[0]) return res.status(404).json({ error: 'Routine not found' });
     res.json(rows[0]);
@@ -1629,7 +1631,7 @@ router.put('/routines/:id', requireOwner, async (req, res) => {
 
 router.delete('/routines/:id', requireOwner, async (req, res) => {
   try {
-    const { rows } = await pool.query('DELETE FROM employee_routines WHERE routine_id=$1 RETURNING *', [req.params.id]);
+    const { rows } = await req.db.query('DELETE FROM employee_routines WHERE routine_id=$1 AND tenant_id=$2 RETURNING *', [req.params.id, req.tenant.id]);
     if (!rows[0]) return res.status(404).json({ error: 'Routine not found' });
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -1638,20 +1640,20 @@ router.delete('/routines/:id', requireOwner, async (req, res) => {
 router.patch('/routines/:id/complete', uploadPhoto.single('photo'), async (req, res) => {
   let photoUrl = null;
   if (req.file) {
-    photoUrl = `/uploads/routines/${req.file.filename}`;
+    photoUrl = `/uploads/${req.tenant.id}/routines/${req.file.filename}`;
   } else if (req.body && req.body.photo_verification_url) {
     photoUrl = req.body.photo_verification_url;
   }
   try {
-    const { rows: rr } = await pool.query(
-      'SELECT photo_required FROM employee_routines WHERE routine_id=$1',
-      [req.params.id]
+    const { rows: rr } = await req.db.query(
+      'SELECT photo_required FROM employee_routines WHERE routine_id=$1 AND tenant_id=$2',
+      [req.params.id, req.tenant.id]
     );
     if (!rr[0]) return res.status(404).json({ error: 'Routine not found' });
     if (rr[0].photo_required && !photoUrl) {
       return res.status(400).json({ error: 'Photo evidence is required to complete this routine.' });
     }
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `UPDATE employee_routines
           SET status = CASE
                 WHEN started_at IS NOT NULL
@@ -1661,9 +1663,9 @@ router.patch('/routines/:id/complete', uploadPhoto.single('photo'), async (req, 
               END,
               completed_at           = now(),
               photo_verification_url = $1
-        WHERE routine_id = $2
+        WHERE routine_id = $2 AND tenant_id = $3
         RETURNING *`,
-      [photoUrl, req.params.id]
+      [photoUrl, req.params.id, req.tenant.id]
     );
     if (!rows[0]) return res.status(404).json({ error: 'Routine not found' });
     res.json(rows[0]);
@@ -1673,7 +1675,7 @@ router.patch('/routines/:id/complete', uploadPhoto.single('photo'), async (req, 
 /* ---------------- OPERATIONS LOG ---------------- */
 const opsPhotoStorage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const dir = path.join(__dirname, '..', '..', 'uploads', 'operations');
+    const dir = path.join(__dirname, '..', '..', 'uploads', String(req.tenant.id), 'operations');
     require('fs').mkdirSync(dir, { recursive: true });
     cb(null, dir);
   },
@@ -1689,8 +1691,8 @@ router.post('/operations', uploadOpsPhoto.single('photo'), async (req, res) => {
   const { frequency, task_category, task_name, status, metric_data } = req.body || {};
   if (!frequency || !task_name) return res.status(400).json({ error: 'frequency and task_name are required' });
   try {
-    const photoPath = `/uploads/operations/${req.file.filename}`;
-    const { rows } = await pool.query(
+    const photoPath = `/uploads/${req.tenant.id}/operations/${req.file.filename}`;
+    const { rows } = await req.db.query(
       `INSERT INTO operations_log (frequency, task_category, task_name, status, metric_data, photo_url)
        VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
       [frequency, task_category || 'General', task_name, status || 'Completed',
@@ -1705,7 +1707,7 @@ router.post('/operations', uploadOpsPhoto.single('photo'), async (req, res) => {
 router.get('/daily-payments', requireAdmin, async (req, res) => {
   const date = req.query.date || new Date().toISOString().slice(0, 10);
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT b.id, b.reference, b.check_in, b.check_out, b.nights, b.num_guests,
               b.base_amount, b.tax_amount, b.total_amount, b.advance_paid, b.pending_amount,
               b.payment_status, b.payment_method, b.status, b.source, b.created_at,
@@ -1740,30 +1742,30 @@ router.get('/daily-payments', requireAdmin, async (req, res) => {
 router.patch('/bookings/:id/mark-balance-paid', requireAdmin, async (req, res) => {
   try {
     // Fetch full booking details before updating so we have the original pending_amount
-    const before = await pool.query(
+    const before = await req.db.query(
       `SELECT b.*, g.full_name AS guest, g.phone, g.email,
               rt.name AS room, rm.room_number
          FROM bookings b
          JOIN guests g      ON g.id = b.guest_id
          JOIN room_types rt ON rt.id = b.room_type_id
          LEFT JOIN rooms rm ON rm.id = b.room_id
-        WHERE b.id = $1 AND b.pending_amount > 0`,
-      [req.params.id]
+        WHERE b.id = $1 AND b.tenant_id = $2 AND b.pending_amount > 0`,
+      [req.params.id, req.tenant.id]
     );
     if (!before.rows[0]) return res.status(404).json({ error: 'Booking not found or balance already cleared' });
     const booking = before.rows[0];
     const amountCollected = Number(booking.pending_amount);
 
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `UPDATE bookings
           SET advance_paid    = total_amount,
               pending_amount  = 0,
               payment_status  = 'paid',
               balance_paid_at = now(),
               invoice_sent_at = now()
-        WHERE id = $1
+        WHERE id = $1 AND tenant_id = $2
         RETURNING id, reference, advance_paid, pending_amount, payment_status, balance_paid_at`,
-      [req.params.id]
+      [req.params.id, req.tenant.id]
     );
 
     res.json(rows[0]);
@@ -1776,6 +1778,7 @@ router.patch('/bookings/:id/mark-balance-paid', requireAdmin, async (req, res) =
       console.error('[mark-balance-paid] Invoice email failed:', err.message)
     );
     sendBalancePaymentAlert({
+      tenant_id: req.tenant.id,
       bookingRef: booking.reference,
       guestName: booking.guest,
       amountCollected,
@@ -1795,10 +1798,10 @@ router.patch('/bookings/:id/mark-balance-paid', requireAdmin, async (req, res) =
 // PATCH /api/admin/bookings/:id/verify-payment  (owner only)
 router.patch('/bookings/:id/verify-payment', requireOwner, async (req, res) => {
   try {
-    const { rows } = await pool.query(
-      `UPDATE bookings SET owner_payment_verified = TRUE WHERE id = $1
+    const { rows } = await req.db.query(
+      `UPDATE bookings SET owner_payment_verified = TRUE WHERE id = $1 AND tenant_id = $2
        RETURNING id, reference, owner_payment_verified`,
-      [req.params.id]
+      [req.params.id, req.tenant.id]
     );
     if (!rows[0]) return res.status(404).json({ error: 'Booking not found' });
     res.json(rows[0]);
@@ -1810,7 +1813,7 @@ router.patch('/bookings/:id/verify-payment', requireOwner, async (req, res) => {
 // POST /api/admin/bookings/:id/send-invoice  (owner only)
 router.post('/bookings/:id/send-invoice', requireOwner, async (req, res) => {
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT b.*, g.full_name AS guest, g.phone, g.email,
               rt.name AS room, rm.room_number
          FROM bookings b
@@ -1823,10 +1826,10 @@ router.post('/bookings/:id/send-invoice', requireOwner, async (req, res) => {
     if (!rows[0]) return res.status(404).json({ error: 'Booking not found' });
     const booking = rows[0];
     await sendInvoiceEmail(booking);
-    const upd = await pool.query(
-      `UPDATE bookings SET invoice_sent_at = now() WHERE id = $1
+    const upd = await req.db.query(
+      `UPDATE bookings SET invoice_sent_at = now() WHERE id = $1 AND tenant_id = $2
        RETURNING id, reference, invoice_sent_at`,
-      [req.params.id]
+      [req.params.id, req.tenant.id]
     );
     res.json({ ok: true, invoice_sent_at: upd.rows[0].invoice_sent_at });
   } catch (err) {
@@ -1838,7 +1841,7 @@ router.post('/bookings/:id/send-invoice', requireOwner, async (req, res) => {
 /* ---------------- NOTIFICATION LOGS ---------------- */
 router.get('/notifications', async (req, res) => {
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT * FROM notification_logs ORDER BY sent_at DESC LIMIT 300`
     );
     res.json(rows);
@@ -1847,7 +1850,7 @@ router.get('/notifications', async (req, res) => {
 
 router.delete('/notifications', requireOwner, async (req, res) => {
   try {
-    await pool.query(`DELETE FROM notification_logs`);
+    await req.db.query(`DELETE FROM notification_logs WHERE tenant_id=$1`, [req.tenant.id]);
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -1861,7 +1864,7 @@ router.get('/special-requests', async (req, res) => {
   let where = '';
   if (status) { params.push(status); where = `WHERE sr.status = $${params.length}`; }
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT sr.*, b.reference, b.check_in, b.check_out,
               g.full_name AS guest_name, g.email AS guest_email, g.phone AS guest_phone,
               rt.name AS room_name, rm.room_number,
@@ -1891,7 +1894,7 @@ router.post('/special-requests', async (req, res) => {
     return res.status(400).json({ error: "request_type must be 'early_checkin' or 'late_checkout'" });
 
   const standardTime = request_type === 'early_checkin' ? '11:00' : '10:00';
-  const feePerHour = Number(process.env.EARLY_LATE_FEE_PER_HOUR || 150);
+  const feePerHour = Number(req.tenant.settings?.early_late_fee_per_hour ?? process.env.EARLY_LATE_FEE_PER_HOUR ?? 150);
 
   const [rh, rm] = requested_time.split(':').map(Number);
   const [sh, sm] = standardTime.split(':').map(Number);
@@ -1900,7 +1903,7 @@ router.post('/special-requests', async (req, res) => {
   const totalFee = Math.round(hoursDelta * feePerHour * 100) / 100;
 
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `INSERT INTO special_requests
          (booking_id, request_type, requested_time, standard_time, hours_delta, fee_per_hour, total_fee, notes)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
@@ -1918,14 +1921,14 @@ router.patch('/special-requests/:id', requireAdmin, async (req, res) => {
   const allowed = ['pending', 'approved', 'denied', 'waived'];
   if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status' });
 
-  const client = await pool.connect();
+  const client = await req.db.connect();
   try {
     await client.query('BEGIN');
     const { rows } = await client.query(
       `UPDATE special_requests
          SET status=$1, notes=COALESCE($2, notes), resolved_at=NOW(), resolved_by=$3
-        WHERE id=$4 RETURNING *`,
-      [status, notes || null, req.user.id, req.params.id]
+        WHERE id=$4 AND tenant_id=$5 RETURNING *`,
+      [status, notes || null, req.user.id, req.params.id, req.tenant.id]
     );
     if (!rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Request not found' }); }
 
@@ -1946,7 +1949,7 @@ router.patch('/special-requests/:id', requireAdmin, async (req, res) => {
 
     await client.query('COMMIT');
 
-    pool.query(
+    req.db.query(
       `SELECT b.reference, g.full_name, g.email, g.phone
          FROM bookings b JOIN guests g ON g.id = b.guest_id
         WHERE b.id = $1`,
@@ -1954,6 +1957,7 @@ router.patch('/special-requests/:id', requireAdmin, async (req, res) => {
     ).then(r => {
       if (r.rows[0]) {
         sendSpecialRequestUpdate({
+          tenant_id: req.tenant.id,
           guestEmail: r.rows[0].email,
           guestName: r.rows[0].full_name,
           guestPhone: r.rows[0].phone,
@@ -1983,10 +1987,10 @@ router.post('/bookings/:id/early-checkout', requireAdmin, async (req, res) => {
   const { actual_checkout, refund_method, waive_refund, refund_amount: requestedRefund, manual_refund_amount, notes } = req.body || {};
   if (!actual_checkout) return res.status(400).json({ error: 'actual_checkout is required' });
 
-  const client = await pool.connect();
+  const client = await req.db.connect();
   try {
     await client.query('BEGIN');
-    const cur = await client.query('SELECT * FROM bookings WHERE id=$1 FOR UPDATE', [req.params.id]);
+    const cur = await client.query('SELECT * FROM bookings WHERE id=$1 AND tenant_id=$2 FOR UPDATE', [req.params.id, req.tenant.id]);
     if (!cur.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Booking not found' }); }
     const bk = cur.rows[0];
 
@@ -2080,12 +2084,12 @@ router.post('/bookings/:id/early-checkout', requireAdmin, async (req, res) => {
     await client.query('COMMIT');
 
     // Create feedback row and send receipt async
-    pool.query(
+    req.db.query(
       `SELECT b.*, g.full_name AS guest, g.email, g.phone, rt.name AS room, rt.code, b.guest_id
          FROM bookings b
          JOIN guests g ON g.id=b.guest_id
          JOIN room_types rt ON rt.id=b.room_type_id
-        WHERE b.id=$1`, [req.params.id]
+        WHERE b.id=$1 AND b.tenant_id=$2`, [req.params.id, req.tenant.id]
     ).then(async r => {
       const booking = r.rows[0];
       if (!booking) return;
@@ -2093,11 +2097,11 @@ router.post('/bookings/:id/early-checkout', requireAdmin, async (req, res) => {
       const feedbackToken = require('crypto').randomUUID();
       const baseUrl = process.env.FEEDBACK_BASE_URL || 'http://localhost:5173/feedback';
       try {
-        await pool.query(
+        await req.db.query(
           `INSERT INTO guest_feedback (booking_id, guest_id, token) VALUES ($1,$2,$3) ON CONFLICT (token) DO NOTHING`,
           [booking.id, booking.guest_id, feedbackToken]
         );
-        sendFeedbackEmail(booking.email, booking.guest, `${baseUrl}/${feedbackToken}`, booking.phone, booking.reference).catch(() => {});
+        sendFeedbackEmail(booking.email, booking.guest, `${baseUrl}/${feedbackToken}`, booking.phone, booking.reference, req.tenant.id).catch(() => {});
       } catch {}
     }).catch(() => {});
 
@@ -2119,10 +2123,10 @@ router.post('/bookings/:id/refund', requireAdmin, async (req, res) => {
     return res.status(400).json({ error: 'refund_amount must be a positive number' });
   if (!reason) return res.status(400).json({ error: 'reason is required' });
 
-  const client = await pool.connect();
+  const client = await req.db.connect();
   try {
     await client.query('BEGIN');
-    const cur = await client.query('SELECT * FROM bookings WHERE id=$1 FOR UPDATE', [req.params.id]);
+    const cur = await client.query('SELECT * FROM bookings WHERE id=$1 AND tenant_id=$2 FOR UPDATE', [req.params.id, req.tenant.id]);
     if (!cur.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Booking not found' }); }
     const bk = cur.rows[0];
 
@@ -2164,32 +2168,32 @@ router.post('/bookings/:id/refund', requireAdmin, async (req, res) => {
 router.patch('/bookings/:id/refund-processed', requireOwner, async (req, res) => {
   const { notes, refund_amount, refund_method } = req.body || {};
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `UPDATE bookings
           SET refund_status       = 'processed',
               refund_processed_at = now(),
               refund_processed_by = $1,
               refund_amount       = CASE WHEN $3::numeric IS NOT NULL THEN $3::numeric ELSE refund_amount END,
               refund_method       = CASE WHEN $4::text    IS NOT NULL THEN $4          ELSE refund_method END
-        WHERE id = $2 AND refund_status = 'pending'
+        WHERE id = $2 AND tenant_id = $5 AND refund_status = 'pending'
         RETURNING id, reference, refund_amount, refund_status, refund_processed_at`,
       [req.user.id, req.params.id,
        refund_amount != null ? Number(refund_amount) : null,
-       refund_method || null]
+       refund_method || null, req.tenant.id]
     );
     if (!rows[0]) return res.status(404).json({ error: 'Booking not found or refund not in pending state' });
     if (notes) {
-      await pool.query(
+      await req.db.query(
         `UPDATE payments SET notes = COALESCE(notes || ' | ' || $1, $1)
           WHERE booking_id = $2 AND type = 'refund' AND status = 'pending'`,
         [notes, req.params.id]
       );
-      await pool.query(
+      await req.db.query(
         `UPDATE payments SET status = 'processed' WHERE booking_id = $1 AND type = 'refund'`,
         [req.params.id]
       );
     } else {
-      await pool.query(
+      await req.db.query(
         `UPDATE payments SET status = 'processed' WHERE booking_id = $1 AND type = 'refund'`,
         [req.params.id]
       );
@@ -2207,7 +2211,7 @@ router.get('/bookings/:id/early-checkout/preview', requireAdmin, async (req, res
   const { actual_checkout } = req.query;
   if (!actual_checkout) return res.status(400).json({ error: 'actual_checkout query param is required' });
   try {
-    const { rows } = await pool.query('SELECT * FROM bookings WHERE id=$1', [req.params.id]);
+    const { rows } = await req.db.query('SELECT * FROM bookings WHERE id=$1 AND tenant_id=$2', [req.params.id, req.tenant.id]);
     if (!rows[0]) return res.status(404).json({ error: 'Booking not found' });
     const bk = rows[0];
     if (bk.status !== 'checked_in') return res.status(400).json({ error: 'Booking must be checked_in' });
@@ -2219,7 +2223,7 @@ router.get('/bookings/:id/early-checkout/preview', requireAdmin, async (req, res
     const unusedNights = bk.nights - actualNights;
     const advancePaid  = Number(bk.advance_paid);
     const origTaxPct   = Number(bk.base_amount) > 0 ? (Number(bk.tax_amount) / Number(bk.base_amount)) * 100 : 0;
-    const rateQ = await pool.query(
+    const rateQ = await req.db.query(
       `SELECT stay_date::date AS date, rate FROM inventory
         WHERE room_type_id = $1 AND stay_date >= $2 AND stay_date < $3 ORDER BY stay_date`,
       [bk.room_type_id, checkIn, actual_checkout]
@@ -2259,7 +2263,7 @@ router.get('/bookings/:id/extend/availability', requireAdmin, async (req, res) =
   const { new_checkout } = req.query;
   if (!new_checkout) return res.status(400).json({ error: 'new_checkout query param is required' });
   try {
-    const bkQ = await pool.query(
+    const bkQ = await req.db.query(
       `SELECT b.*, rt.name AS room_type_name FROM bookings b JOIN room_types rt ON rt.id = b.room_type_id WHERE b.id=$1`,
       [req.params.id]
     );
@@ -2270,7 +2274,7 @@ router.get('/bookings/:id/extend/availability', requireAdmin, async (req, res) =
     if (new_checkout <= origCheckOut) return res.status(400).json({ error: 'new_checkout must be after current checkout' });
     const extensionNights = Math.round((new Date(new_checkout) - new Date(origCheckOut)) / 86400000);
     // Same room type inventory for extension nights
-    const sameTypeQ = await pool.query(
+    const sameTypeQ = await req.db.query(
       `SELECT stay_date::date AS date, total_units, booked_units, rate, is_closed
          FROM inventory WHERE room_type_id=$1 AND stay_date>=$2 AND stay_date<$3 ORDER BY stay_date`,
       [bk.room_type_id, origCheckOut, new_checkout]
@@ -2282,14 +2286,14 @@ router.get('/bookings/:id/extend/availability', requireAdmin, async (req, res) =
     // Physical room conflict check
     let sameRoomAvailable = true;
     if (bk.room_id) {
-      const conflict = await pool.query(
+      const conflict = await req.db.query(
         `SELECT 1 FROM bookings WHERE room_id=$1 AND id<>$2 AND status<>'cancelled' AND check_in<$4 AND check_out>$3 LIMIT 1`,
         [bk.room_id, bk.id, origCheckOut, new_checkout]
       );
       sameRoomAvailable = conflict.rows.length === 0;
     }
     // Alternative room types
-    const altQ = await pool.query(
+    const altQ = await req.db.query(
       `SELECT rt.id, rt.name, rt.code,
               COUNT(*)::int AS inv_nights,
               COUNT(*) FILTER (WHERE inv.booked_units < inv.total_units AND NOT inv.is_closed)::int AS avail_nights,
@@ -2355,10 +2359,10 @@ router.get('/bookings/:id/extend/availability', requireAdmin, async (req, res) =
 router.post('/bookings/:id/extend', requireAdmin, async (req, res) => {
   const { new_checkout, room_type_id: newTypeId, room_id: newRoomId, additional_payment, payment_method, notes } = req.body || {};
   if (!new_checkout) return res.status(400).json({ error: 'new_checkout is required' });
-  const client = await pool.connect();
+  const client = await req.db.connect();
   try {
     await client.query('BEGIN');
-    const cur = await client.query('SELECT * FROM bookings WHERE id=$1 FOR UPDATE', [req.params.id]);
+    const cur = await client.query('SELECT * FROM bookings WHERE id=$1 AND tenant_id=$2 FOR UPDATE', [req.params.id, req.tenant.id]);
     if (!cur.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Booking not found' }); }
     const bk = cur.rows[0];
     if (bk.status !== 'checked_in') {
@@ -2439,7 +2443,7 @@ router.post('/bookings/:id/extend', requireAdmin, async (req, res) => {
       );
     }
     await client.query('COMMIT');
-    const full = await pool.query(
+    const full = await req.db.query(
       `SELECT b.*, g.full_name AS guest, g.phone, g.email, rt.name AS room, rt.code, rm.room_number
          FROM bookings b
          JOIN guests g ON g.id=b.guest_id
@@ -2461,7 +2465,7 @@ router.post('/bookings/:id/extend', requireAdmin, async (req, res) => {
 // GET /api/admin/feedback
 router.get('/feedback', requireAdmin, async (req, res) => {
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT gf.id, gf.token, gf.rating_overall, gf.rating_room, gf.rating_service,
               gf.nps_score, gf.comments, gf.submitted_at, gf.created_at,
               g.full_name AS guest_name, g.email AS guest_email,
@@ -2481,7 +2485,7 @@ router.get('/feedback', requireAdmin, async (req, res) => {
 // GET /api/admin/bookings/due-checkout-today
 router.get('/bookings/due-checkout-today', requireAdmin, async (req, res) => {
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT b.id, b.reference, b.check_in, b.check_out, b.nights,
               b.checkout_notification_sent_at,
               g.full_name AS guest, g.phone, g.email,
@@ -2504,7 +2508,7 @@ router.get('/bookings/due-checkout-today', requireAdmin, async (req, res) => {
 // POST /api/admin/bookings/:id/notify-checkout
 router.post('/bookings/:id/notify-checkout', requireAdmin, async (req, res) => {
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT b.id, b.reference, b.check_in, b.check_out, b.nights, b.status,
               b.checkout_notification_sent_at,
               g.full_name AS guest, g.phone, g.email,
@@ -2528,7 +2532,7 @@ router.post('/bookings/:id/notify-checkout', requireAdmin, async (req, res) => {
 
     const result = await sendCheckoutReminder(booking);
 
-    await pool.query(
+    await req.db.query(
       'UPDATE bookings SET checkout_notification_sent_at = now() WHERE id = $1',
       [req.params.id]
     );
@@ -2542,7 +2546,7 @@ router.post('/bookings/:id/notify-checkout', requireAdmin, async (req, res) => {
 // GET /api/admin/feedback/stats
 router.get('/feedback/stats', requireAdmin, async (req, res) => {
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT
          COUNT(*) FILTER (WHERE submitted_at IS NOT NULL)::int AS total_responses,
          ROUND(AVG(rating_overall) FILTER (WHERE submitted_at IS NOT NULL), 2) AS avg_overall,
@@ -2551,7 +2555,7 @@ router.get('/feedback/stats', requireAdmin, async (req, res) => {
          ROUND(AVG(nps_score) FILTER (WHERE submitted_at IS NOT NULL), 2) AS avg_nps
        FROM guest_feedback`
     );
-    const npsRows = await pool.query(
+    const npsRows = await req.db.query(
       `SELECT nps_score, COUNT(*)::int AS cnt
          FROM guest_feedback WHERE submitted_at IS NOT NULL AND nps_score IS NOT NULL
         GROUP BY nps_score ORDER BY nps_score`
@@ -2566,7 +2570,7 @@ router.get('/feedback/stats', requireAdmin, async (req, res) => {
 // GET /api/admin/competitor-rates/latest  → latest rate for each resort
 router.get('/competitor-rates/latest', async (req, res) => {
   try {
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT DISTINCT ON (resort_name) resort_name, room_type, rate, fetched_at
          FROM competitor_rates
         ORDER BY resort_name, fetched_at DESC`
@@ -2583,13 +2587,13 @@ router.get('/suppressed-yield', requireOwner, async (req, res) => {
   const from = req.query.from || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
   const to   = req.query.to   || new Date().toISOString().slice(0, 10);
   try {
-    const totalQ = await pool.query(
+    const totalQ = await req.db.query(
       `SELECT COALESCE(SUM(delta),0) AS total_delta, COUNT(*) AS events
          FROM suppressed_yield_log
         WHERE booking_date >= $1 AND booking_date <= $2`,
       [from, to]
     );
-    const dailyQ = await pool.query(
+    const dailyQ = await req.db.query(
       `SELECT booking_date, SUM(delta)::numeric AS suppressed
          FROM suppressed_yield_log
         WHERE booking_date >= $1 AND booking_date <= $2
@@ -2612,7 +2616,7 @@ router.post('/suppressed-yield', async (req, res) => {
   const { unconstrained_price, applied_price, delta, room_id } = req.body || {};
   if (!unconstrained_price || !delta) return res.status(400).json({ error: 'unconstrained_price and delta required' });
   try {
-    await pool.query(
+    await req.db.query(
       `INSERT INTO suppressed_yield_log (unconstrained_price, applied_price, delta, room_id)
        VALUES ($1, $2, $3, $4)`,
       [unconstrained_price, applied_price || 7499, delta, room_id || null]
@@ -2631,7 +2635,7 @@ router.get('/whatsapp/status', async (req, res) => {
   try {
     const { getWhatsAppStatus } = require('../services/whatsapp');
     const { ready, initializing } = getWhatsAppStatus();
-    const { rows } = await pool.query(`SELECT COUNT(*) AS count FROM whatsapp_queue`);
+    const { rows } = await req.db.query(`SELECT COUNT(*) AS count FROM whatsapp_queue`);
     res.json({ ready, initializing, pending_count: parseInt(rows[0].count, 10) });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2646,7 +2650,7 @@ router.post('/whatsapp/retry', async (req, res) => {
     const { ready } = getWhatsAppStatus();
     if (!ready) return res.status(503).json({ error: 'WhatsApp client is not ready — scan the QR code in the server console first.' });
     await drainDbQueue();
-    const { rows } = await pool.query(`SELECT COUNT(*) AS count FROM whatsapp_queue`);
+    const { rows } = await req.db.query(`SELECT COUNT(*) AS count FROM whatsapp_queue`);
     res.json({ ok: true, remaining: parseInt(rows[0].count, 10) });
   } catch (err) {
     res.status(500).json({ error: err.message });
