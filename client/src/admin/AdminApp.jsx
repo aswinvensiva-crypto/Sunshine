@@ -8,6 +8,7 @@ import {
   Banknote, Clock, Star, ReceiptText, Home, ListChecks, ArrowLeftRight,
 } from "lucide-react";
 import { login, setSession, getUser, getToken, clearSession, initToaster } from "./adminContext.js";
+import { getTenant } from "../api/client.js";
 import LoginPage from "./LoginPage.jsx";
 import ShortcutLayer from "../components/ShortcutLayer.jsx";
 import Breadcrumbs from "../components/Breadcrumbs.jsx";
@@ -154,7 +155,7 @@ export default function AdminApp() {
         : <LoginPage
             subtitle="Resort Management System"
             hint={<>Default: <b>admin</b> / <b>admin123</b></>}
-            onLogin={async (u, p) => { const { token, user } = await login(u, p); setSession(token, user); setAuthed(true); }}
+            onLogin={async (u, p) => { const { token, user, tenant } = await login(u, p); setSession(token, user, tenant); setAuthed(true); }}
           />
       }
       <Toaster toasts={toasts} />
@@ -279,10 +280,10 @@ function AdminShell({ onLogout }) {
     <div className="jq-shell" data-theme={darkMode ? "dark" : "light"}>
       {/* ── Top Bar ── */}
       <header className="jq-topbar">
-        {/* Left: brand */}
+        {/* Left: brand — shows the signed-in resort, not a hardcoded name */}
         <div className="jq-topbar-left">
           <Sparkles size={16} className="jq-logo-icon" />
-          <span className="jq-logo">Sunshine</span>
+          <span className="jq-logo">{getTenant().name || "Sunshine"}</span>
         </div>
 
         {/* Centre: dropdown nav buttons */}
@@ -356,7 +357,7 @@ function AdminShell({ onLogout }) {
           >
             <div className="jq-user-details">
               <span className="jq-user-name-label">{user.full_name || user.username}</span>
-              <span className="jq-user-role-label">Sunshine Resort</span>
+              <span className="jq-user-role-label">{getTenant().name || "Sunshine Resort"}</span>
             </div>
             <div className="jq-avatar-btn">
               {(user.username || "A")[0].toUpperCase()}

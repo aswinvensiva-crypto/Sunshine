@@ -173,8 +173,8 @@ function LoginModal({onSuccess,onClose}){
   const submit=async(e)=>{
     e.preventDefault(); setErr(""); setBusy(true);
     try{
-      const {token,user}=await login(username.trim(),password);
-      setSession(token,user); onSuccess();
+      const {token,user,tenant}=await login(username.trim(),password);
+      setSession(token,user,tenant); onSuccess();
     }catch(e2){
       setErr(e2.message==="Failed to fetch"
         ?"Can't reach the server — start the backend first."
