@@ -143,6 +143,49 @@ router.patch('/tenants/:id/status', requirePlatformAdmin, async (req, res) => {
   }
 });
 
+// Detail for one tenant: its record + user accounts (owners/managers/staff).
+// Passwords are bcrypt hashes and are NEVER returned — they cannot be
+// recovered, only reset via the endpoint below.
+router.get('/tenants/:id', requirePlatformAdmin, async (req, res) => {
+  try {
+    const t = await adminPool.query(
+      `SELECT id, slug, name, status, created_at FROM tenants WHERE id = $1`, [req.params.id]
+    );
+    if (!t.rows[0]) return res.status(404).json({ error: 'Tenant not found' });
+    const users = await adminPool.query(
+      `SELECT id, username, full_name, role, is_blocked, created_at
+         FROM users WHERE tenant_id = $1 ORDER BY (role = 'owner') DESC, id`,
+      [req.params.id]
+    );
+    res.json({ tenant: t.rows[0], users: users.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Reset a user's password within a tenant. Scoped to the tenant so a
+// platform admin can't accidentally target a user in another resort by raw id.
+router.patch('/tenants/:id/users/:userId/password', requirePlatformAdmin, async (req, res) => {
+  const { password } = req.body || {};
+  if (!password || String(password).length < 6) {
+    return res.status(400).json({ error: 'password is required (min 6 characters)' });
+  }
+  try {
+    const hash = await bcrypt.hash(String(password), 10);
+    const { rows } = await adminPool.query(
+      `UPDATE users SET password_hash = $1
+         WHERE id = $2 AND tenant_id = $3
+       RETURNING id, username, role`,
+      [hash, req.params.userId, req.params.id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'User not found in this resort' });
+    res.json({ ok: true, user: rows[0] });
+  } catch (err) {
+    console.error('[platform/reset-password]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.put('/tenants/:id/settings', requirePlatformAdmin, async (req, res) => {
   const s = req.body || {};
   try {

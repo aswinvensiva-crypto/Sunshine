@@ -6,7 +6,7 @@
  * and mint a 30-minute support-impersonation token. This unblocks onboarding
  * a new resort without a manual DB insert.
  */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, Fragment } from 'react';
 
 const TOKEN_KEY = 'platform_token';
 const api = async (path, opts = {}) => {
@@ -79,6 +79,7 @@ function Tenants() {
   const [tenants, setTenants] = useState([]);
   const [err, setErr] = useState('');
   const [notice, setNotice] = useState('');
+  const [selected, setSelected] = useState(null); // tenant row currently expanded
 
   const load = useCallback(() => {
     api('/tenants').then(setTenants).catch(e => setErr(e.message));
@@ -119,20 +120,33 @@ function Tenants() {
           </thead>
           <tbody>
             {tenants.map(t => (
-              <tr key={t.id} style={{ borderTop: '1px solid #e7edf4' }}>
-                <td style={{ padding: '8px', fontFamily: 'monospace' }}>{t.slug}</td>
-                <td>{t.name}</td>
-                <td style={{ color: t.status === 'active' ? '#15803d' : '#b91c1c', fontWeight: 600 }}>{t.status}</td>
-                <td>{t.user_count}</td>
-                <td>{t.booking_count}</td>
-                <td style={{ padding: '6px 0' }}>
-                  {t.status === 'active'
-                    ? <button style={btn('#b91c1c')} onClick={() => setStatus(t, 'suspended')}>Suspend</button>
-                    : <button style={btn('#15803d')} onClick={() => setStatus(t, 'active')}>Reactivate</button>}
-                  {' '}
-                  <button style={btn('#64748b')} onClick={() => impersonate(t)} disabled={t.status !== 'active'}>Impersonate</button>
-                </td>
-              </tr>
+              <Fragment key={t.id}>
+                <tr style={{ borderTop: '1px solid #e7edf4', background: selected === t.id ? '#eef5fb' : undefined }}>
+                  <td style={{ padding: '8px', fontFamily: 'monospace' }}>{t.slug}</td>
+                  <td>{t.name}</td>
+                  <td style={{ color: t.status === 'active' ? '#15803d' : '#b91c1c', fontWeight: 600 }}>{t.status}</td>
+                  <td>{t.user_count}</td>
+                  <td>{t.booking_count}</td>
+                  <td style={{ padding: '6px 0', whiteSpace: 'nowrap' }}>
+                    <button style={btn('#0369a1')} onClick={() => setSelected(selected === t.id ? null : t.id)}>
+                      {selected === t.id ? 'Close' : 'Manage'}
+                    </button>
+                    {' '}
+                    {t.status === 'active'
+                      ? <button style={btn('#b91c1c')} onClick={() => setStatus(t, 'suspended')}>Suspend</button>
+                      : <button style={btn('#15803d')} onClick={() => setStatus(t, 'active')}>Reactivate</button>}
+                    {' '}
+                    <button style={btn('#64748b')} onClick={() => impersonate(t)} disabled={t.status !== 'active'}>Impersonate</button>
+                  </td>
+                </tr>
+                {selected === t.id && (
+                  <tr>
+                    <td colSpan={6} style={{ padding: 0, background: '#f7fafd' }}>
+                      <TenantDetail tenant={t} onErr={setErr} onChanged={load} />
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
             ))}
             {tenants.length === 0 && <tr><td colSpan={6} style={{ padding: 12, color: '#5a7290' }}>No tenants yet.</td></tr>}
           </tbody>
@@ -141,6 +155,85 @@ function Tenants() {
 
       <CreateTenant onCreated={load} onErr={setErr} />
     </>
+  );
+}
+
+function TenantDetail({ tenant, onErr, onChanged }) {
+  const [users, setUsers] = useState(null);
+  const [resetFor, setResetFor] = useState(null); // user id whose password form is open
+  const [pw, setPw] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [ok, setOk] = useState('');
+
+  const loadUsers = useCallback(() => {
+    api(`/tenants/${tenant.id}`)
+      .then(d => setUsers(d.users))
+      .catch(e => onErr(e.message));
+  }, [tenant.id, onErr]);
+  useEffect(loadUsers, [loadUsers]);
+
+  const savePassword = async (u) => {
+    if (pw.length < 6) { onErr('Password must be at least 6 characters.'); return; }
+    setBusy(true); onErr('');
+    try {
+      await api(`/tenants/${tenant.id}/users/${u.id}/password`, {
+        method: 'PATCH', body: JSON.stringify({ password: pw }),
+      });
+      setOk(`Password updated for "${u.username}". They can sign in with the new password now.`);
+      setResetFor(null); setPw('');
+    } catch (e) { onErr(e.message); } finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ padding: '16px 20px' }}>
+      <div style={{ fontSize: 12.5, color: '#5a7290', marginBottom: 10 }}>
+        Login URL: <code>{tenant.slug}.localhost:5173/admin</code> · Passwords are stored encrypted and cannot be shown — use "Set password" to assign a new one.
+      </div>
+      {ok && <div style={{ ...errBox, background: '#f0fdf4', border: '1px solid #bbf7d0', color: '#166534' }}>{ok}</div>}
+      {users == null ? <div style={{ color: '#5a7290', fontSize: 13 }}>Loading accounts…</div> : (
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <thead>
+            <tr style={{ textAlign: 'left', color: '#5a7290' }}>
+              <th style={{ padding: '4px 8px' }}>Username</th><th>Name</th><th>Role</th><th>Status</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {users.map(u => (
+              <Fragment key={u.id}>
+                <tr style={{ borderTop: '1px solid #e7edf4' }}>
+                  <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>{u.username}</td>
+                  <td>{u.full_name || '—'}</td>
+                  <td style={{ textTransform: 'capitalize' }}>{u.role}</td>
+                  <td style={{ color: u.is_blocked ? '#b91c1c' : '#15803d' }}>{u.is_blocked ? 'blocked' : 'active'}</td>
+                  <td style={{ textAlign: 'right', padding: '4px 0' }}>
+                    <button style={btn('#0369a1')}
+                      onClick={() => { setResetFor(resetFor === u.id ? null : u.id); setPw(''); }}>
+                      {resetFor === u.id ? 'Cancel' : 'Set password'}
+                    </button>
+                  </td>
+                </tr>
+                {resetFor === u.id && (
+                  <tr>
+                    <td colSpan={5} style={{ padding: '8px' }}>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <input style={{ ...input, margin: 0, maxWidth: 260 }} type="text" autoFocus
+                          placeholder={`New password for ${u.username}`}
+                          value={pw} onChange={e => setPw(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') savePassword(u); }} />
+                        <button style={btn('#15803d')} disabled={busy} onClick={() => savePassword(u)}>
+                          {busy ? 'Saving…' : 'Save password'}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            ))}
+            {users.length === 0 && <tr><td colSpan={5} style={{ padding: 10, color: '#5a7290' }}>No user accounts.</td></tr>}
+          </tbody>
+        </table>
+      )}
+    </div>
   );
 }
 
