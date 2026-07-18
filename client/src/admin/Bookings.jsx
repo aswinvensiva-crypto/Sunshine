@@ -95,6 +95,7 @@ export default function Bookings({ isStaff = false }) {
   // Pagination
   const [page, setPage]         = useState(1);
   const [pageSize, setPageSize] = useState(25);
+  useEffect(() => { setPage(1); }, [search, statusFilter, otaOnly]);
   // Delete all
   const [confirmDelAll, setConfirmDelAll] = useState(false);
   const [deletingAll, setDeletingAll]     = useState(false);
@@ -352,8 +353,6 @@ export default function Bookings({ isStaff = false }) {
     );
   });
   const pagedBookings = bookings.slice((page - 1) * pageSize, page * pageSize);
-
-  useEffect(() => { setPage(1); }, [search, statusFilter, otaOnly]);
 
   return (
     <div className="ff-page">
