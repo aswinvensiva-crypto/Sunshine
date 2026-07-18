@@ -106,7 +106,7 @@ export default function StaffApp() {
             subtitle="Staff Portal — Sunshine Resort"
             hint="Use your staff credentials to sign in."
             isStaff
-            onLogin={async (u, p) => { const { token, employee } = await employeeLogin(u, p); setEmployeeSession(token, employee); setAuthed(true); }}
+            onLogin={async (u, p) => { const { token, employee, tenant } = await employeeLogin(u, p); setEmployeeSession(token, employee, tenant); setAuthed(true); }}
           />
       }
       <Toaster toasts={toasts} />

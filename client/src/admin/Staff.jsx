@@ -8,6 +8,7 @@ import { useState } from "react";
 import { Plus, Pencil, X, Clock, UserCheck, UserX, ShieldOff, Shield, Trash2, KeyRound } from "lucide-react";
 import { useApi, apiFetch, adminUsers, blockUser, deleteUser, deleteEmployee, getUser, fmtDate, fmtTime, todayISO, notify, setEmployeeCredentials } from "./adminContext.js";
 import { Spinner, ApiError, SectionHeader, Card, Field, Grid2, TableWrap, Modal, StatusBadge, EmptyState } from "./ui.jsx";
+import FfSubmitButton from "../components/FfSubmitButton.jsx";
 
 const ROLES      = ["Front Desk", "Housekeeping", "Maintenance", "Manager", "Pool Attendant"];
 const DAYS       = Array.from({ length: 7 }, (_, i) => {
@@ -337,9 +338,9 @@ export default function Staff() {
               <input type="checkbox" checked={empForm.is_active} onChange={e => setEmpForm(p => ({...p, is_active:e.target.checked}))}/>
               <span>Active employee</span>
             </label>
-            <button type="submit" className="ff-btn ff-btn-primary" style={{ width:"100%", justifyContent:"center" }} disabled={busy}>
-              {busy ? "Saving…" : (empModal?.employee_id ? "Save Changes" : "Add Employee")}
-            </button>
+            <FfSubmitButton className="ff-btn-primary" style={{ width:"100%", justifyContent:"center" }} onClick={saveEmployee} spinnerLabel="Saving…">
+              {empModal?.employee_id ? "Save Changes" : "Add Employee"}
+            </FfSubmitButton>
           </form>
 
           {empModal?.employee_id && (
@@ -368,9 +369,9 @@ export default function Staff() {
                     </Field>
                   )}
                 </Grid2>
-                <button type="submit" className="ff-btn ff-btn-outline" style={{ width:"100%", justifyContent:"center" }} disabled={busy}>
-                  {busy ? "Saving…" : (empModal.username ? "Update Portal Credentials" : "Set Portal Credentials")}
-                </button>
+                <FfSubmitButton className="ff-btn-outline" style={{ width:"100%", justifyContent:"center" }} onClick={saveCredentials} spinnerLabel="Saving…">
+                  {empModal.username ? "Update Portal Credentials" : "Set Portal Credentials"}
+                </FfSubmitButton>
               </form>
             </>
           )}
@@ -412,9 +413,9 @@ export default function Staff() {
               <Field label="Start Time *"><input type="time" value={shiftForm.start_time} onChange={e => setShiftForm(p => ({...p, start_time:e.target.value}))} required/></Field>
               <Field label="End Time *"><input type="time" value={shiftForm.end_time} onChange={e => setShiftForm(p => ({...p, end_time:e.target.value}))} required/></Field>
             </Grid2>
-            <button type="submit" className="ff-btn ff-btn-primary" style={{ width:"100%", justifyContent:"center" }} disabled={busy}>
-              {busy ? "Saving…" : (shiftForm.employee_id && shiftMap[shiftForm.employee_id]?.[shiftForm.shift_date] ? "Update Shift" : "Assign Shift")}
-            </button>
+            <FfSubmitButton className="ff-btn-primary" style={{ width:"100%", justifyContent:"center" }} onClick={saveShift} spinnerLabel="Saving…">
+              {shiftForm.employee_id && shiftMap[shiftForm.employee_id]?.[shiftForm.shift_date] ? "Update Shift" : "Assign Shift"}
+            </FfSubmitButton>
           </form>
         </Modal>
       )}
@@ -487,9 +488,9 @@ export default function Staff() {
               </p>
               <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
                 <button className="ff-btn ff-btn-ghost" onClick={() => setConfirmDelUser(null)}>Cancel</button>
-                <button className="ff-btn ff-btn-primary" style={{ background:"var(--ff-danger)", borderColor:"var(--ff-danger)" }} onClick={doDeleteUser} disabled={busy}>
-                  {busy ? "Deleting…" : "Yes, Delete"}
-                </button>
+                <FfSubmitButton className="ff-btn-primary" style={{ background:"var(--ff-danger)", borderColor:"var(--ff-danger)" }} onClick={doDeleteUser} spinnerLabel="Deleting…">
+                  Yes, Delete
+                </FfSubmitButton>
               </div>
             </div>
           </div>
@@ -510,9 +511,9 @@ export default function Staff() {
               </p>
               <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
                 <button className="ff-btn ff-btn-ghost" onClick={() => setConfirmDelShift(null)}>Cancel</button>
-                <button className="ff-btn ff-btn-primary" style={{ background:"var(--ff-danger)", borderColor:"var(--ff-danger)" }} onClick={doDeleteShift} disabled={busy}>
-                  {busy ? "Removing…" : "Yes, Remove"}
-                </button>
+                <FfSubmitButton className="ff-btn-primary" style={{ background:"var(--ff-danger)", borderColor:"var(--ff-danger)" }} onClick={doDeleteShift} spinnerLabel="Removing…">
+                  Yes, Remove
+                </FfSubmitButton>
               </div>
             </div>
           </div>
@@ -533,9 +534,9 @@ export default function Staff() {
               </p>
               <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
                 <button className="ff-btn ff-btn-ghost" onClick={() => setConfirmDelEmp(null)}>Cancel</button>
-                <button className="ff-btn ff-btn-primary" style={{ background:"var(--ff-danger)", borderColor:"var(--ff-danger)" }} onClick={doDeleteEmployee} disabled={busy}>
-                  {busy ? "Removing…" : "Yes, Remove"}
-                </button>
+                <FfSubmitButton className="ff-btn-primary" style={{ background:"var(--ff-danger)", borderColor:"var(--ff-danger)" }} onClick={doDeleteEmployee} spinnerLabel="Removing…">
+                  Yes, Remove
+                </FfSubmitButton>
               </div>
             </div>
           </div>

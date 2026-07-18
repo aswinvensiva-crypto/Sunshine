@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Plus, Trash2, Pencil, LayoutGrid, BedDouble, Sunset, AlertTriangle } from "lucide-react";
 import { useApi, apiFetch, getUser, rupee, notify } from "./adminContext.js";
 import { Spinner, ApiError, SectionHeader, Modal, Field, EmptyState } from "./ui.jsx";
+import FfSubmitButton from "../components/FfSubmitButton.jsx";
 
 /* ── Room grid helpers ── */
 const STATUS_META = {
@@ -420,14 +421,9 @@ export default function RoomTypes() {
                 />
               </Field>
             )}
-            <button
-              type="submit"
-              className="ff-btn ff-btn-primary"
-              style={{ width: "100%", justifyContent: "center" }}
-              disabled={busy}
-            >
-              {busy ? "Saving…" : "Save Status"}
-            </button>
+            <FfSubmitButton className="ff-btn-primary" style={{ width: "100%", justifyContent: "center" }} onClick={saveStatus} spinnerLabel="Saving…">
+              Save Status
+            </FfSubmitButton>
           </form>
         </Modal>
       )}
@@ -463,14 +459,9 @@ export default function RoomTypes() {
                 ))}
               </select>
             </Field>
-            <button
-              type="submit"
-              className="ff-btn ff-btn-primary"
-              style={{ width: "100%", justifyContent: "center" }}
-              disabled={busy}
-            >
-              {busy ? "Adding…" : "Add Room"}
-            </button>
+            <FfSubmitButton className="ff-btn-primary" style={{ width: "100%", justifyContent: "center" }} onClick={addRoom} spinnerLabel="Adding…">
+              Add Room
+            </FfSubmitButton>
           </form>
         </Modal>
       )}
@@ -536,14 +527,9 @@ export default function RoomTypes() {
                 placeholder="AC, Pool view, King bed"
               />
             </Field>
-            <button
-              type="submit"
-              className="ff-btn ff-btn-primary"
-              style={{ width: "100%", justifyContent: "center" }}
-              disabled={busy}
-            >
-              {busy ? "Saving…" : modal === "new" ? "Create" : "Save Changes"}
-            </button>
+            <FfSubmitButton className="ff-btn-primary" style={{ width: "100%", justifyContent: "center" }} onClick={saveType} spinnerLabel="Saving…">
+              {modal === "new" ? "Create" : "Save Changes"}
+            </FfSubmitButton>
           </form>
         </Modal>
       )}
@@ -559,14 +545,14 @@ export default function RoomTypes() {
               </p>
               <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
                 <button className="ff-btn ff-btn-ghost" onClick={() => setConfirmDelType(null)}>Cancel</button>
-                <button
-                  className="ff-btn ff-btn-primary"
+                <FfSubmitButton
+                  className="ff-btn-primary"
                   style={{ background: "var(--ff-danger)", borderColor: "var(--ff-danger)" }}
                   onClick={doDeleteType}
-                  disabled={busy}
+                  spinnerLabel="Deleting…"
                 >
-                  {busy ? "Deleting…" : "Delete"}
-                </button>
+                  Delete
+                </FfSubmitButton>
               </div>
             </div>
           </div>
@@ -584,14 +570,14 @@ export default function RoomTypes() {
               </p>
               <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
                 <button className="ff-btn ff-btn-ghost" onClick={() => setConfirmDelRoom(null)}>Cancel</button>
-                <button
-                  className="ff-btn ff-btn-primary"
+                <FfSubmitButton
+                  className="ff-btn-primary"
                   style={{ background: "var(--ff-danger)", borderColor: "var(--ff-danger)" }}
                   onClick={deleteRoom}
-                  disabled={busy}
+                  spinnerLabel="Removing…"
                 >
-                  {busy ? "Removing…" : "Remove"}
-                </button>
+                  Remove
+                </FfSubmitButton>
               </div>
             </div>
           </div>

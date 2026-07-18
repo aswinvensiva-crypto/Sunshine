@@ -7,10 +7,35 @@
  */
 const nodemailer = require('nodemailer');
 const PDFDocument = require('pdfkit');
-const { pool }   = require('../config/db');
+const { adminPool } = require('../config/db');
 const { sendWhatsApp, sendWhatsAppDocument } = require('./whatsapp');
 
-const OWNER_PHONE = process.env.OWNER_PHONE || '9514771332';
+const DEFAULT_TENANT_SLUG = 'sunshine-original';
+
+/* Per-tenant owner contact + WhatsApp policy. Values come from
+   tenant_settings.branding (owner_email / owner_phone); the .env values only
+   apply to the original resort so a new tenant can never inherit them. */
+async function tenantOwnerContact(tenant_id) {
+  let ownerEmail = null, ownerPhone = null, slug = null;
+  try {
+    if (tenant_id != null) {
+      const { rows } = await adminPool.query(
+        `SELECT t.slug, s.branding->>'owner_email' AS owner_email,
+                s.branding->>'owner_phone' AS owner_phone
+           FROM tenants t LEFT JOIN tenant_settings s ON s.tenant_id = t.id
+          WHERE t.id = $1`, [tenant_id]);
+      if (rows[0]) {
+        slug = rows[0].slug;
+        ownerEmail = rows[0].owner_email || null;
+        ownerPhone = rows[0].owner_phone || null;
+      }
+    }
+  } catch (e) { console.error('[notify] tenantOwnerContact:', e.message); }
+  const isDefault = tenant_id == null || slug === DEFAULT_TENANT_SLUG;
+  if (!ownerEmail && isDefault) ownerEmail = process.env.OWNER_EMAIL || null;
+  if (!ownerPhone && isDefault) ownerPhone = process.env.OWNER_PHONE || '9514771332';
+  return { ownerEmail, ownerPhone };
+}
 
 /* ── helpers ─────────────────────────────────────────────────────── */
 const rupee  = (n) => '₹' + Number(n || 0).toLocaleString('en-IN');
@@ -30,13 +55,13 @@ function getTransporter() {
 }
 
 /* ── log to DB ─────────────────────────────────────────────────────*/
-async function log({ booking_ref, guest_name, email, phone, type, status, message, error }) {
+async function log({ tenant_id, booking_ref, guest_name, email, phone, type, status, message, error }) {
   try {
-    await pool.query(
+    await adminPool.query(
       `INSERT INTO notification_logs
-         (booking_ref, guest_name, email, phone, type, status, message, error)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [booking_ref, guest_name, email || null, phone || null,
+         (tenant_id, booking_ref, guest_name, email, phone, type, status, message, error)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [tenant_id ?? null, booking_ref, guest_name, email || null, phone || null,
        type, status, message || null, error || null]
     );
   } catch (dbErr) {
@@ -414,6 +439,7 @@ function buildInvoiceHtml({ guestName, reference, roomName, checkIn, checkOut, n
 
 /* ── send invoice email + WhatsApp PDF ─────────────────────────────*/
 async function sendInvoiceEmail(booking) {
+  const tenant_id = booking.tenant_id ?? null;
   const {
     reference, guest: guestName, email, phone,
     room: roomName, check_in, check_out, total_amount, nights,
@@ -448,21 +474,21 @@ async function sendInvoiceEmail(booking) {
         html,
         attachments: [{ filename, content: pdfBuffer, contentType: 'application/pdf' }],
       });
-      await log({ booking_ref: reference, guest_name: guestName, email, phone, type: 'invoice', status: 'sent', message: `Invoice sent to ${email}` });
+      await log({ tenant_id, booking_ref: reference, guest_name: guestName, email, phone, type: 'invoice', status: 'sent', message: `Invoice sent to ${email}` });
       console.log(`[notify] Invoice sent → ${email}`);
       emailOk = true;
     } catch (err) {
-      await log({ booking_ref: reference, guest_name: guestName, email, phone, type: 'invoice', status: 'failed', error: err.message });
+      await log({ tenant_id, booking_ref: reference, guest_name: guestName, email, phone, type: 'invoice', status: 'failed', error: err.message });
       console.error('[notify] Invoice email failed:', err.message);
     }
   } else if (email) {
-    await log({ booking_ref: reference, guest_name: guestName, email, phone, type: 'invoice', status: 'skipped', error: 'GMAIL credentials not configured' });
+    await log({ tenant_id, booking_ref: reference, guest_name: guestName, email, phone, type: 'invoice', status: 'skipped', error: 'GMAIL credentials not configured' });
   }
 
   // Always send PDF via WhatsApp if phone exists (independent of email)
   if (phone) {
     const wa = await sendWhatsAppDocument(phone, pdfBuffer, filename, waCaption);
-    await log({ booking_ref: reference, guest_name: guestName, email, phone, type: 'whatsapp', status: wa.ok ? 'sent' : 'failed', message: wa.ok ? `WhatsApp invoice PDF sent to ${phone}` : null, error: wa.ok ? null : wa.reason });
+    await log({ tenant_id, booking_ref: reference, guest_name: guestName, email, phone, type: 'whatsapp', status: wa.ok ? 'sent' : 'failed', message: wa.ok ? `WhatsApp invoice PDF sent to ${phone}` : null, error: wa.ok ? null : wa.reason });
   }
 
   if (!emailOk && !phone) {
@@ -472,6 +498,7 @@ async function sendInvoiceEmail(booking) {
 
 /* ── send advance receipt at check-in ─────────────────────────────*/
 async function sendAdvanceReceiptEmail(booking, { skipWa = false } = {}) {
+  const tenant_id = booking.tenant_id ?? null;
   const {
     reference, guest: guestName, email, phone,
     room: roomName, check_in, check_out, total_amount, nights,
@@ -513,40 +540,35 @@ async function sendAdvanceReceiptEmail(booking, { skipWa = false } = {}) {
         html: advanceHtml,
         attachments: [{ filename, content: pdfBuffer, contentType: 'application/pdf' }],
       });
-      await log({ booking_ref: reference, guest_name: guestName, email, phone, type: 'advance_receipt', status: 'sent', message: `Advance receipt sent to ${email}` });
+      await log({ tenant_id, booking_ref: reference, guest_name: guestName, email, phone, type: 'advance_receipt', status: 'sent', message: `Advance receipt sent to ${email}` });
       console.log(`[notify] Advance receipt sent → ${email}`);
     } catch (err) {
-      await log({ booking_ref: reference, guest_name: guestName, email, phone, type: 'advance_receipt', status: 'failed', error: err.message });
+      await log({ tenant_id, booking_ref: reference, guest_name: guestName, email, phone, type: 'advance_receipt', status: 'failed', error: err.message });
       console.error('[notify] Advance receipt email failed:', err.message);
     }
   } else {
-    await log({ booking_ref: reference, guest_name: guestName, email, phone, type: 'advance_receipt', status: 'skipped', error: email ? 'GMAIL not configured' : 'No guest email' });
+    await log({ tenant_id, booking_ref: reference, guest_name: guestName, email, phone, type: 'advance_receipt', status: 'skipped', error: email ? 'GMAIL not configured' : 'No guest email' });
   }
 
   // Send PDF via WhatsApp unless caller already sent it (e.g. sendBookingNotifications)
   if (phone && !skipWa) {
     const wa = await sendWhatsAppDocument(phone, pdfBuffer, filename, waCaption);
-    await log({ booking_ref: reference, guest_name: guestName, email, phone, type: 'whatsapp', status: wa.ok ? 'sent' : 'failed', message: wa.ok ? `WhatsApp advance receipt PDF to ${phone}` : null, error: wa.ok ? null : wa.reason });
+    await log({ tenant_id, booking_ref: reference, guest_name: guestName, email, phone, type: 'whatsapp', status: wa.ok ? 'sent' : 'failed', message: wa.ok ? `WhatsApp advance receipt PDF to ${phone}` : null, error: wa.ok ? null : wa.reason });
   }
 }
 
-/* ── resolve owner email ───────────────────────────────────────────*/
-async function resolveOwnerEmail() {
-  if (process.env.OWNER_EMAIL) return process.env.OWNER_EMAIL;
-  try {
-    const { rows } = await pool.query(`SELECT email FROM users WHERE role = 'owner' LIMIT 1`);
-    return rows[0]?.email || null;
-  } catch {
-    return null;
-  }
+/* ── resolve owner email (per tenant) ──────────────────────────────*/
+async function resolveOwnerEmail(tenant_id) {
+  const { ownerEmail } = await tenantOwnerContact(tenant_id);
+  return ownerEmail;
 }
 
 /* ── balance payment alert ─────────────────────────────────────────*/
-async function sendBalancePaymentAlert({ bookingRef, guestName, amountCollected, paymentMethod, newPaymentStatus, pendingAmount, collectedBy, guestPhone }) {
-  const ownerEmail = await resolveOwnerEmail();
+async function sendBalancePaymentAlert({ tenant_id = null, bookingRef, guestName, amountCollected, paymentMethod, newPaymentStatus, pendingAmount, collectedBy, guestPhone }) {
+  const ownerEmail = await resolveOwnerEmail(tenant_id);
   if (!ownerEmail || !process.env.GMAIL_USER || !process.env.GMAIL_PASS ||
       process.env.GMAIL_USER.includes('your_gmail')) {
-    await log({ booking_ref: bookingRef, guest_name: guestName, email: ownerEmail, type: 'balance_payment', status: 'skipped', error: 'Owner email or GMAIL not configured' });
+    await log({ tenant_id, booking_ref: bookingRef, guest_name: guestName, email: ownerEmail, type: 'balance_payment', status: 'skipped', error: 'Owner email or GMAIL not configured' });
     return;
   }
   const statusLabel = newPaymentStatus === 'paid' ? '✅ Fully Paid' : `⚠️ Partial — ${rupee(pendingAmount)} still pending`;
@@ -588,32 +610,32 @@ async function sendBalancePaymentAlert({ bookingRef, guestName, amountCollected,
       subject: `💰 Balance Payment Received – ${bookingRef}`,
       html,
     });
-    await log({ booking_ref: bookingRef, guest_name: guestName, email: ownerEmail, type: 'balance_payment', status: 'sent', message: `Alert sent to ${ownerEmail}` });
+    await log({ tenant_id, booking_ref: bookingRef, guest_name: guestName, email: ownerEmail, type: 'balance_payment', status: 'sent', message: `Alert sent to ${ownerEmail}` });
     console.log(`[notify] Balance payment alert → ${ownerEmail}`);
 
     /* WhatsApp to owner */
     const waMsg = `💰 *Payment Received* — #${bookingRef}\nGuest: ${guestName}\nAmount: ${rupee(amountCollected)} (${paymentMethod || 'cash'})\nCollected by: ${collectedBy}\n${Number(pendingAmount) > 0 ? `Balance still due: ${rupee(pendingAmount)}` : '✅ Fully Paid'}`;
     const wa = await sendWhatsApp(OWNER_PHONE, waMsg);
-    await log({ booking_ref: bookingRef, guest_name: guestName, phone: OWNER_PHONE, type: 'whatsapp', status: wa.ok ? 'sent' : 'failed', message: wa.ok ? `WhatsApp payment alert to owner` : null, error: wa.ok ? null : wa.reason });
+    await log({ tenant_id, booking_ref: bookingRef, guest_name: guestName, phone: OWNER_PHONE, type: 'whatsapp', status: wa.ok ? 'sent' : 'failed', message: wa.ok ? `WhatsApp payment alert to owner` : null, error: wa.ok ? null : wa.reason });
 
     /* WhatsApp receipt to guest */
     if (guestPhone) {
       const guestMsg = `*Sunshine* 🏨 Payment Confirmed!\nBooking Ref: #${bookingRef}\nAmount Paid: ${rupee(amountCollected)} (${paymentMethod || 'cash'})\n✅ Your balance has been cleared. Thank you!`;
       const waGuest = await sendWhatsApp(guestPhone, guestMsg);
-      await log({ booking_ref: bookingRef, guest_name: guestName, phone: guestPhone, type: 'whatsapp', status: waGuest.ok ? 'sent' : 'failed', message: waGuest.ok ? `WhatsApp balance receipt to guest` : null, error: waGuest.ok ? null : waGuest.reason });
+      await log({ tenant_id, booking_ref: bookingRef, guest_name: guestName, phone: guestPhone, type: 'whatsapp', status: waGuest.ok ? 'sent' : 'failed', message: waGuest.ok ? `WhatsApp balance receipt to guest` : null, error: waGuest.ok ? null : waGuest.reason });
     }
   } catch (err) {
-    await log({ booking_ref: bookingRef, guest_name: guestName, email: ownerEmail, type: 'balance_payment', status: 'failed', error: err.message });
+    await log({ tenant_id, booking_ref: bookingRef, guest_name: guestName, email: ownerEmail, type: 'balance_payment', status: 'failed', error: err.message });
     console.error('[notify] Balance payment alert failed:', err.message);
   }
 }
 
 /* ── cancellation alert ────────────────────────────────────────────*/
-async function sendCancellationAlert({ bookingRef, guestName, roomTypeName, checkIn, checkOut, nights, cancelledBy, cancelledAt }) {
-  const ownerEmail = await resolveOwnerEmail();
+async function sendCancellationAlert({ tenant_id = null, bookingRef, guestName, roomTypeName, checkIn, checkOut, nights, cancelledBy, cancelledAt }) {
+  const ownerEmail = await resolveOwnerEmail(tenant_id);
   if (!ownerEmail || !process.env.GMAIL_USER || !process.env.GMAIL_PASS ||
       process.env.GMAIL_USER.includes('your_gmail')) {
-    await log({ booking_ref: bookingRef, guest_name: guestName, email: ownerEmail, type: 'cancellation', status: 'skipped', error: 'Owner email or GMAIL not configured' });
+    await log({ tenant_id, booking_ref: bookingRef, guest_name: guestName, email: ownerEmail, type: 'cancellation', status: 'skipped', error: 'Owner email or GMAIL not configured' });
     return;
   }
   const html = `
@@ -656,21 +678,22 @@ async function sendCancellationAlert({ bookingRef, guestName, roomTypeName, chec
       subject: `🚨 Booking Cancelled – ${bookingRef} | ${fmtDate(checkIn)} → ${fmtDate(checkOut)} Now Available`,
       html,
     });
-    await log({ booking_ref: bookingRef, guest_name: guestName, email: ownerEmail, type: 'cancellation', status: 'sent', message: `Cancellation alert sent to ${ownerEmail}` });
+    await log({ tenant_id, booking_ref: bookingRef, guest_name: guestName, email: ownerEmail, type: 'cancellation', status: 'sent', message: `Cancellation alert sent to ${ownerEmail}` });
     console.log(`[notify] Cancellation alert → ${ownerEmail}`);
 
     /* WhatsApp to owner */
     const waMsg = `🚨 *Booking Cancelled* — #${bookingRef}\nGuest: ${guestName}\nRoom: ${roomTypeName}\n${fmtDate(checkIn)} → ${fmtDate(checkOut)} (${nights} nights)\nCancelled by: ${cancelledBy}`;
     const wa = await sendWhatsApp(OWNER_PHONE, waMsg);
-    await log({ booking_ref: bookingRef, guest_name: guestName, phone: OWNER_PHONE, type: 'whatsapp', status: wa.ok ? 'sent' : 'failed', message: wa.ok ? `WhatsApp cancellation alert to owner` : null, error: wa.ok ? null : wa.reason });
+    await log({ tenant_id, booking_ref: bookingRef, guest_name: guestName, phone: OWNER_PHONE, type: 'whatsapp', status: wa.ok ? 'sent' : 'failed', message: wa.ok ? `WhatsApp cancellation alert to owner` : null, error: wa.ok ? null : wa.reason });
   } catch (err) {
-    await log({ booking_ref: bookingRef, guest_name: guestName, email: ownerEmail, type: 'cancellation', status: 'failed', error: err.message });
+    await log({ tenant_id, booking_ref: bookingRef, guest_name: guestName, email: ownerEmail, type: 'cancellation', status: 'failed', error: err.message });
     console.error('[notify] Cancellation alert failed:', err.message);
   }
 }
 
 /* ── main exported function ────────────────────────────────────────*/
 async function sendBookingNotifications(booking) {
+  const tenant_id = booking.tenant_id ?? null;
   const {
     reference, guest: guestName, email, phone,
     room: roomName, check_in, check_out, total_amount, nights,
@@ -695,15 +718,15 @@ async function sendBookingNotifications(booking) {
         subject: `Booking Confirmed: ${reference} — Sunshine Pondicherry`,
         html,
       });
-      await log({ booking_ref: reference, guest_name: guestName, email, phone, type: 'email', status: 'sent', message: `Confirmation sent to ${email}` });
+      await log({ tenant_id, booking_ref: reference, guest_name: guestName, email, phone, type: 'email', status: 'sent', message: `Confirmation sent to ${email}` });
       console.log(`[notify] Email sent → ${email}`);
     } catch (err) {
-      await log({ booking_ref: reference, guest_name: guestName, email, phone, type: 'email', status: 'failed', error: err.message });
+      await log({ tenant_id, booking_ref: reference, guest_name: guestName, email, phone, type: 'email', status: 'failed', error: err.message });
       console.error('[notify] Email failed:', err.message);
     }
   } else {
     if (email) {
-      await log({ booking_ref: reference, guest_name: guestName, email, phone, type: 'email', status: 'skipped', error: 'GMAIL credentials not configured in .env' });
+      await log({ tenant_id, booking_ref: reference, guest_name: guestName, email, phone, type: 'email', status: 'skipped', error: 'GMAIL credentials not configured in .env' });
     }
   }
 
@@ -729,40 +752,42 @@ async function sendBookingNotifications(booking) {
   const waMsg = `*Sunshine Resort* ✅\nBooking confirmed: #${reference}\nRoom: ${roomName} | ${nightCount} night${nightCount !== 1 ? 's' : ''}\nCheck-in: ${fmtDate(check_in)} → Check-out: ${fmtDate(check_out)}\nTotal: ${rupee(total_amount)}`;
   if (phone) {
     const waGuest = await sendWhatsApp(phone, waMsg);
-    await log({ booking_ref: reference, guest_name: guestName, email, phone, type: 'whatsapp', status: waGuest.ok ? 'sent' : 'failed', message: waGuest.ok ? `WhatsApp confirmation sent to guest ${phone}` : null, error: waGuest.ok ? null : waGuest.reason });
+    await log({ tenant_id, booking_ref: reference, guest_name: guestName, email, phone, type: 'whatsapp', status: waGuest.ok ? 'sent' : 'failed', message: waGuest.ok ? `WhatsApp confirmation sent to guest ${phone}` : null, error: waGuest.ok ? null : waGuest.reason });
 
     if (pdfBuffer) {
       const guestCaption = `*Sunshine* 🏨 Welcome, ${guestName}!\nAdvance receipt — Ref: #${reference}\nRoom: ${roomName} | ${nightCount} nights\nAdvance paid: ${rupee(advance_paid)}${Number(pending_amount) > 0 ? `\nBalance due at checkout: ${rupee(pending_amount)}` : '\n✅ Fully Paid'}\nCheck-in: ${fmtDate(check_in)} → Check-out: ${fmtDate(check_out)}`;
       const waPdf = await sendWhatsAppDocument(phone, pdfBuffer, pdfFilename, guestCaption);
-      await log({ booking_ref: reference, guest_name: guestName, email, phone, type: 'whatsapp', status: waPdf.ok ? 'sent' : 'failed', message: waPdf.ok ? `WhatsApp invoice PDF sent to guest ${phone}` : null, error: waPdf.ok ? null : waPdf.reason });
+      await log({ tenant_id, booking_ref: reference, guest_name: guestName, email, phone, type: 'whatsapp', status: waPdf.ok ? 'sent' : 'failed', message: waPdf.ok ? `WhatsApp invoice PDF sent to guest ${phone}` : null, error: waPdf.ok ? null : waPdf.reason });
     }
   }
 
   /* ── 4. WhatsApp — owner (alert text + invoice PDF) ────────────── */
+  const { ownerPhone: OWNER_PHONE } = await tenantOwnerContact(tenant_id);
   const waOwner = await sendWhatsApp(OWNER_PHONE, ownerMsg);
-  await log({ booking_ref: reference, guest_name: guestName, phone: OWNER_PHONE, type: 'whatsapp', status: waOwner.ok ? 'sent' : 'failed', message: waOwner.ok ? `WhatsApp new booking alert sent to owner` : null, error: waOwner.ok ? null : waOwner.reason });
+  await log({ tenant_id, booking_ref: reference, guest_name: guestName, phone: OWNER_PHONE, type: 'whatsapp', status: waOwner.ok ? 'sent' : 'failed', message: waOwner.ok ? `WhatsApp new booking alert sent to owner` : null, error: waOwner.ok ? null : waOwner.reason });
 
   if (pdfBuffer) {
     const ownerCaption = `📋 *Booking Receipt* — #${reference}\nGuest: ${guestName} | Room: ${roomName}\n${nightCount} nights · ${fmtDate(check_in)} → ${fmtDate(check_out)}\nTotal: ${rupee(total_amount)} | Advance: ${rupee(advance_paid)}${Number(pending_amount) > 0 ? `\nBalance due: ${rupee(pending_amount)}` : '\n✅ Fully Paid'}`;
     const waOwnerPdf = await sendWhatsAppDocument(OWNER_PHONE, pdfBuffer, pdfFilename, ownerCaption);
-    await log({ booking_ref: reference, guest_name: guestName, phone: OWNER_PHONE, type: 'whatsapp', status: waOwnerPdf.ok ? 'sent' : 'failed', message: waOwnerPdf.ok ? `WhatsApp invoice PDF sent to owner` : null, error: waOwnerPdf.ok ? null : waOwnerPdf.reason });
+    await log({ tenant_id, booking_ref: reference, guest_name: guestName, phone: OWNER_PHONE, type: 'whatsapp', status: waOwnerPdf.ok ? 'sent' : 'failed', message: waOwnerPdf.ok ? `WhatsApp invoice PDF sent to owner` : null, error: waOwnerPdf.ok ? null : waOwnerPdf.reason });
   }
 }
 
 /* ── overbooking alert ─────────────────────────────────────────────*/
-async function sendOverbookingAlert({ roomTypeId, checkIn, checkOut, triggeredBy }) {
+async function sendOverbookingAlert({ tenantId = null, roomTypeId, checkIn, checkOut, triggeredBy }) {
+  const tenant_id = tenantId;
   let roomTypeName = `Room Type #${roomTypeId}`;
   try {
-    const r = await pool.query('SELECT name FROM room_types WHERE id=$1', [roomTypeId]);
+    const r = await adminPool.query('SELECT name FROM room_types WHERE id=$1 AND ($2::int IS NULL OR tenant_id=$2)', [roomTypeId, tenant_id]);
     if (r.rows[0]) roomTypeName = r.rows[0].name;
   } catch (_) {}
 
   const msg = `Overbooking attempt: ${roomTypeName} ${fmtDate(checkIn)}→${fmtDate(checkOut)} by ${triggeredBy}`;
 
-  const ownerEmail = await resolveOwnerEmail();
+  const ownerEmail = await resolveOwnerEmail(tenant_id);
   if (!ownerEmail || !process.env.GMAIL_USER || !process.env.GMAIL_PASS ||
       process.env.GMAIL_USER.includes('your_gmail')) {
-    await log({ booking_ref: null, guest_name: triggeredBy, email: ownerEmail, type: 'overbooking_attempt', status: 'skipped', message: msg, error: 'Owner email or GMAIL not configured' });
+    await log({ tenant_id, booking_ref: null, guest_name: triggeredBy, email: ownerEmail, type: 'overbooking_attempt', status: 'skipped', message: msg, error: 'Owner email or GMAIL not configured' });
     return;
   }
 
@@ -804,16 +829,16 @@ async function sendOverbookingAlert({ roomTypeId, checkIn, checkOut, triggeredBy
       subject: `⚠️ Overbooking Attempt Blocked – ${roomTypeName} | ${fmtDate(checkIn)}`,
       html,
     });
-    await log({ booking_ref: null, guest_name: triggeredBy, email: ownerEmail, type: 'overbooking_attempt', status: 'sent', message: msg });
+    await log({ tenant_id, booking_ref: null, guest_name: triggeredBy, email: ownerEmail, type: 'overbooking_attempt', status: 'sent', message: msg });
     console.log(`[notify] Overbooking alert → ${ownerEmail}`);
   } catch (err) {
-    await log({ booking_ref: null, guest_name: triggeredBy, email: ownerEmail, type: 'overbooking_attempt', status: 'failed', message: msg, error: err.message });
+    await log({ tenant_id, booking_ref: null, guest_name: triggeredBy, email: ownerEmail, type: 'overbooking_attempt', status: 'failed', message: msg, error: err.message });
     console.error('[notify] Overbooking alert failed:', err.message);
   }
 }
 
 /* ── special request status update to guest ────────────────────────*/
-async function sendSpecialRequestUpdate({ guestEmail, guestName, guestPhone, bookingRef, requestType, requestedTime, status, totalFee }) {
+async function sendSpecialRequestUpdate({ tenant_id = null, guestEmail, guestName, guestPhone, bookingRef, requestType, requestedTime, status, totalFee }) {
   const typeLabel = requestType === 'early_checkin' ? 'Early Check-In' : 'Late Check-Out';
   const statusLabel = status === 'approved' ? '✅ Approved' : status === 'denied' ? '❌ Denied' : '✓ Waived';
   const logType = `special_request_${status}`;
@@ -862,7 +887,7 @@ async function sendSpecialRequestUpdate({ guestEmail, guestName, guestPhone, boo
         subject: `Special Request ${status === 'approved' ? 'Approved' : status === 'denied' ? 'Update' : 'Waived'} – ${bookingRef}`,
         html,
       });
-      await log({ booking_ref: bookingRef, guest_name: guestName, email: guestEmail, phone: guestPhone, type: logType, status: 'sent', message: `${typeLabel} request ${status}` });
+      await log({ tenant_id, booking_ref: bookingRef, guest_name: guestName, email: guestEmail, phone: guestPhone, type: logType, status: 'sent', message: `${typeLabel} request ${status}` });
 
       /* WhatsApp to guest */
       if (guestPhone) {
@@ -870,13 +895,13 @@ async function sendSpecialRequestUpdate({ guestEmail, guestName, guestPhone, boo
         const feeNote = status === 'approved' && Number(totalFee) > 0 ? `\nFee added: ${rupee(totalFee)}` : '';
         const waMsg = `${emoji} *${typeLabel} ${statusLabel}*\nRef: #${bookingRef}${feeNote}\nFor queries, contact Sunshine directly.`;
         const wa = await sendWhatsApp(guestPhone, waMsg);
-        await log({ booking_ref: bookingRef, guest_name: guestName, phone: guestPhone, type: 'whatsapp', status: wa.ok ? 'sent' : 'failed', message: wa.ok ? `WhatsApp special request update to guest` : null, error: wa.ok ? null : wa.reason });
+        await log({ tenant_id, booking_ref: bookingRef, guest_name: guestName, phone: guestPhone, type: 'whatsapp', status: wa.ok ? 'sent' : 'failed', message: wa.ok ? `WhatsApp special request update to guest` : null, error: wa.ok ? null : wa.reason });
       }
     } catch (err) {
-      await log({ booking_ref: bookingRef, guest_name: guestName, email: guestEmail, phone: guestPhone, type: logType, status: 'failed', error: err.message });
+      await log({ tenant_id, booking_ref: bookingRef, guest_name: guestName, email: guestEmail, phone: guestPhone, type: logType, status: 'failed', error: err.message });
     }
   } else {
-    await log({ booking_ref: bookingRef, guest_name: guestName, email: guestEmail, phone: guestPhone, type: logType, status: 'skipped', error: guestEmail ? 'GMAIL not configured' : 'No guest email' });
+    await log({ tenant_id, booking_ref: bookingRef, guest_name: guestName, email: guestEmail, phone: guestPhone, type: logType, status: 'skipped', error: guestEmail ? 'GMAIL not configured' : 'No guest email' });
 
     /* WhatsApp to guest even if email not configured */
     if (guestPhone) {
@@ -884,13 +909,14 @@ async function sendSpecialRequestUpdate({ guestEmail, guestName, guestPhone, boo
       const feeNote = status === 'approved' && Number(totalFee) > 0 ? `\nFee added: ${rupee(totalFee)}` : '';
       const waMsg = `${emoji} *${typeLabel} ${statusLabel}*\nRef: #${bookingRef}${feeNote}\nFor queries, contact Sunshine directly.`;
       const wa = await sendWhatsApp(guestPhone, waMsg);
-      await log({ booking_ref: bookingRef, guest_name: guestName, phone: guestPhone, type: 'whatsapp', status: wa.ok ? 'sent' : 'failed', message: wa.ok ? `WhatsApp special request update to guest` : null, error: wa.ok ? null : wa.reason });
+      await log({ tenant_id, booking_ref: bookingRef, guest_name: guestName, phone: guestPhone, type: 'whatsapp', status: wa.ok ? 'sent' : 'failed', message: wa.ok ? `WhatsApp special request update to guest` : null, error: wa.ok ? null : wa.reason });
     }
   }
 }
 
 /* ── checkout receipt ──────────────────────────────────────────────*/
 async function sendCheckoutReceipt(booking) {
+  const tenant_id = booking.tenant_id ?? null;
   const {
     reference, guest: guestName, email, phone,
     room: roomName, check_in, check_out, total_amount, nights,
@@ -932,28 +958,28 @@ async function sendCheckoutReceipt(booking) {
         html,
         attachments: [{ filename, content: pdfBuffer, contentType: 'application/pdf' }],
       });
-      await log({ booking_ref: reference, guest_name: guestName, email, phone, type: 'checkout_receipt', status: 'sent', message: `Checkout receipt sent to ${email}` });
+      await log({ tenant_id, booking_ref: reference, guest_name: guestName, email, phone, type: 'checkout_receipt', status: 'sent', message: `Checkout receipt sent to ${email}` });
       console.log(`[notify] Checkout receipt → ${email}`);
     } catch (err) {
-      await log({ booking_ref: reference, guest_name: guestName, email, phone, type: 'checkout_receipt', status: 'failed', error: err.message });
+      await log({ tenant_id, booking_ref: reference, guest_name: guestName, email, phone, type: 'checkout_receipt', status: 'failed', error: err.message });
       console.error('[notify] Checkout receipt email failed:', err.message);
     }
   } else {
-    await log({ booking_ref: reference, guest_name: guestName, email, phone, type: 'checkout_receipt', status: 'skipped', error: email ? 'GMAIL not configured' : 'No guest email' });
+    await log({ tenant_id, booking_ref: reference, guest_name: guestName, email, phone, type: 'checkout_receipt', status: 'skipped', error: email ? 'GMAIL not configured' : 'No guest email' });
   }
 
   // Always send PDF via WhatsApp if phone exists
   if (phone) {
     const wa = await sendWhatsAppDocument(phone, pdfBuffer, filename, waCaption);
-    await log({ booking_ref: reference, guest_name: guestName, email, phone, type: 'whatsapp', status: wa.ok ? 'sent' : 'failed', message: wa.ok ? `WhatsApp checkout receipt PDF to ${phone}` : null, error: wa.ok ? null : wa.reason });
+    await log({ tenant_id, booking_ref: reference, guest_name: guestName, email, phone, type: 'whatsapp', status: wa.ok ? 'sent' : 'failed', message: wa.ok ? `WhatsApp checkout receipt PDF to ${phone}` : null, error: wa.ok ? null : wa.reason });
   }
 }
 
 /* ── feedback email ────────────────────────────────────────────────*/
-async function sendFeedbackEmail(guestEmail, guestName, feedbackUrl, guestPhone, bookingRef) {
+async function sendFeedbackEmail(guestEmail, guestName, feedbackUrl, guestPhone, bookingRef, tenant_id = null) {
   if (!guestEmail || !process.env.GMAIL_USER || !process.env.GMAIL_PASS ||
       process.env.GMAIL_USER.includes('your_gmail')) {
-    await log({ booking_ref: bookingRef, guest_name: guestName, email: guestEmail, phone: guestPhone, type: 'feedback_request', status: 'skipped', error: guestEmail ? 'GMAIL not configured' : 'No guest email' });
+    await log({ tenant_id, booking_ref: bookingRef, guest_name: guestName, email: guestEmail, phone: guestPhone, type: 'feedback_request', status: 'skipped', error: guestEmail ? 'GMAIL not configured' : 'No guest email' });
     return;
   }
 
@@ -995,30 +1021,30 @@ async function sendFeedbackEmail(guestEmail, guestName, feedbackUrl, guestPhone,
       subject: `How was your stay at Sunshine? — ${bookingRef}`,
       html,
     });
-    await log({ booking_ref: bookingRef, guest_name: guestName, email: guestEmail, phone: guestPhone, type: 'feedback_request', status: 'sent', message: `Feedback request sent to ${guestEmail}` });
+    await log({ tenant_id, booking_ref: bookingRef, guest_name: guestName, email: guestEmail, phone: guestPhone, type: 'feedback_request', status: 'sent', message: `Feedback request sent to ${guestEmail}` });
     console.log(`[notify] Feedback request → ${guestEmail}`);
 
     /* WhatsApp to guest */
     if (guestPhone) {
       const waMsg = `*Sunshine* ⭐ Hi ${guestName}, how was your stay?\nWe'd love your feedback (takes 1 min):\n${feedbackUrl}\nThank you! — Sunshine Pondicherry`;
       const wa = await sendWhatsApp(guestPhone, waMsg);
-      await log({ booking_ref: bookingRef, guest_name: guestName, phone: guestPhone, type: 'whatsapp', status: wa.ok ? 'sent' : 'failed', message: wa.ok ? `WhatsApp feedback request to ${guestPhone}` : null, error: wa.ok ? null : wa.reason });
+      await log({ tenant_id, booking_ref: bookingRef, guest_name: guestName, phone: guestPhone, type: 'whatsapp', status: wa.ok ? 'sent' : 'failed', message: wa.ok ? `WhatsApp feedback request to ${guestPhone}` : null, error: wa.ok ? null : wa.reason });
     }
   } catch (err) {
-    await log({ booking_ref: bookingRef, guest_name: guestName, email: guestEmail, phone: guestPhone, type: 'feedback_request', status: 'failed', error: err.message });
+    await log({ tenant_id, booking_ref: bookingRef, guest_name: guestName, email: guestEmail, phone: guestPhone, type: 'feedback_request', status: 'failed', error: err.message });
     console.error('[notify] Feedback email failed:', err.message);
   }
 }
 
 /* ── check-in SMS ──────────────────────────────────────────────────*/
-async function sendCheckInSMS(phone, guestName, checkInUrl, bookingRef) {
+async function sendCheckInSMS(phone, guestName, checkInUrl, bookingRef, tenant_id = null) {
   const accountSid = process.env.TWILIO_ACCOUNT_SID;
   const authToken  = process.env.TWILIO_AUTH_TOKEN;
   const fromPhone  = process.env.TWILIO_PHONE;
 
   if (!accountSid || !authToken || !fromPhone ||
       accountSid.includes('AC_your') || fromPhone.includes('XXXXXXXXXX')) {
-    await log({ booking_ref: bookingRef, guest_name: guestName, phone, type: 'checkin_sms', status: 'skipped', error: 'Twilio not configured' });
+    await log({ tenant_id, booking_ref: bookingRef, guest_name: guestName, phone, type: 'checkin_sms', status: 'skipped', error: 'Twilio not configured' });
     return;
   }
 
@@ -1027,16 +1053,17 @@ async function sendCheckInSMS(phone, guestName, checkInUrl, bookingRef) {
 
   try {
     await twilio.messages.create({ body, from: fromPhone, to: phone });
-    await log({ booking_ref: bookingRef, guest_name: guestName, phone, type: 'checkin_sms', status: 'sent', message: `SMS sent to ${phone}` });
+    await log({ tenant_id, booking_ref: bookingRef, guest_name: guestName, phone, type: 'checkin_sms', status: 'sent', message: `SMS sent to ${phone}` });
     console.log(`[notify] Check-in SMS → ${phone}`);
   } catch (err) {
-    await log({ booking_ref: bookingRef, guest_name: guestName, phone, type: 'checkin_sms', status: 'failed', error: err.message });
+    await log({ tenant_id, booking_ref: bookingRef, guest_name: guestName, phone, type: 'checkin_sms', status: 'failed', error: err.message });
     console.error('[notify] Check-in SMS failed:', err.message);
   }
 }
 
 /* ── checkout reminder (sent on checkout day by owner) ─────────────*/
 async function sendCheckoutReminder(booking) {
+  const tenant_id = booking.tenant_id ?? null;
   const { reference, guest, phone, email, room, room_number, check_out } = booking;
   const dateStr = fmtDate(check_out);
   const roomLabel = `${room}${room_number ? ` · ${room_number}` : ''}`;
@@ -1059,7 +1086,7 @@ Our team will assist you shortly.
 
   if (phone) {
     const wa = await sendWhatsApp(phone, waMsg);
-    await log({ booking_ref: reference, guest_name: guest, phone, type: 'whatsapp', status: wa.ok ? 'sent' : 'failed', message: wa.ok ? `Checkout reminder WhatsApp to ${phone}` : null, error: wa.ok ? null : wa.reason });
+    await log({ tenant_id, booking_ref: reference, guest_name: guest, phone, type: 'whatsapp', status: wa.ok ? 'sent' : 'failed', message: wa.ok ? `Checkout reminder WhatsApp to ${phone}` : null, error: wa.ok ? null : wa.reason });
     if (wa.ok) channel = 'whatsapp';
   }
 
@@ -1091,10 +1118,10 @@ Our team will assist you shortly.
         subject: `Checkout Reminder — ${reference} · ${dateStr}`,
         html,
       });
-      await log({ booking_ref: reference, guest_name: guest, email, type: 'checkout_reminder', status: 'sent', message: `Checkout reminder email to ${email}` });
+      await log({ tenant_id, booking_ref: reference, guest_name: guest, email, type: 'checkout_reminder', status: 'sent', message: `Checkout reminder email to ${email}` });
       if (channel === 'none') channel = 'email'; else channel = 'both';
     } catch (err) {
-      await log({ booking_ref: reference, guest_name: guest, email, type: 'checkout_reminder', status: 'failed', error: err.message });
+      await log({ tenant_id, booking_ref: reference, guest_name: guest, email, type: 'checkout_reminder', status: 'failed', error: err.message });
       console.error('[notify] Checkout reminder email failed:', err.message);
     }
   }

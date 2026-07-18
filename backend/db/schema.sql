@@ -298,3 +298,38 @@ CREATE TABLE IF NOT EXISTS guest_feedback (
   submitted_at   TIMESTAMPTZ,
   created_at     TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- ---- Multi-tenancy (platform tables) ----
+-- NOTE: after applying this schema, run `node db/migrate.js`. It adds
+-- tenant_id to every tenant-scoped table, converts global uniques to
+-- per-tenant uniques, enables Row-Level Security, and creates the
+-- non-superuser application role. migrate.js is the source of truth for
+-- tenancy enforcement; this file only declares the platform tables.
+
+CREATE TABLE IF NOT EXISTS tenants (
+  id         SERIAL PRIMARY KEY,
+  slug       TEXT UNIQUE NOT NULL CHECK (slug ~ '^[a-z0-9][a-z0-9-]*$'),
+  name       TEXT NOT NULL,
+  status     TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','suspended')),
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS tenant_settings (
+  tenant_id            INT PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+  razorpay_key_id      TEXT,
+  razorpay_key_secret  TEXT,
+  whatsapp_sender      TEXT,
+  whatsapp_enabled     BOOLEAN NOT NULL DEFAULT FALSE,
+  gst_number           TEXT,
+  early_late_fee_per_hour NUMERIC(10,2) NOT NULL DEFAULT 150,
+  branding             JSONB NOT NULL DEFAULT '{}'::jsonb,
+  updated_at           TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS platform_admins (
+  id            SERIAL PRIMARY KEY,
+  username      TEXT UNIQUE NOT NULL,
+  full_name     TEXT,
+  password_hash TEXT NOT NULL,
+  created_at    TIMESTAMPTZ DEFAULT now()
+);

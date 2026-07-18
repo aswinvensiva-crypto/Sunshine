@@ -8,6 +8,7 @@ import { useState, useMemo, useEffect } from "react";
 import { Zap, TrendingUp, AlertTriangle, DollarSign, Calculator, CalendarDays, Sun, BarChart2 } from "lucide-react";
 import { useApi, adminRooms, apiFetch, rupee, notify } from "./adminContext.js";
 import { Spinner, ApiError, SectionHeader, Card, Field, Grid2, StatCard, ProgressBar } from "./ui.jsx";
+import FfSubmitButton from "../components/FfSubmitButton.jsx";
 
 // f2.docx exact surge algorithm
 function calculateSurgeRate(baseSeasonPrice, roomsSold, daysToArrival) {
@@ -218,8 +219,8 @@ function MarketPulse({ yourRate }) {
                 <tr key={i} style={{ borderTop: "1px solid #f3f4f6" }}>
                   <td style={{ padding: "6px 0", color: "#374151" }}>{r.resort_name}</td>
                   <td style={{ textAlign: "right", color: "#6b7280" }}>{r.room_type}</td>
-                  <td style={{ textAlign: "right", fontWeight: 700 }}>{rupee(r.rate)}</td>
-                  <td style={{ textAlign: "right", fontWeight: 700, color: delta > 0 ? "#16a34a" : "#dc2626" }}>
+                  <td className="ff-num" style={{ textAlign: "right", fontWeight: 700 }}>{rupee(r.rate)}</td>
+                  <td className="ff-num" style={{ textAlign: "right", fontWeight: 700, color: delta > 0 ? "#16a34a" : "#dc2626" }}>
                     {delta > 0 ? "+" : ""}{rupee(delta)}
                   </td>
                 </tr>
@@ -228,8 +229,8 @@ function MarketPulse({ yourRate }) {
             {median && (
               <tr style={{ borderTop: "2px solid #e5e7eb" }}>
                 <td style={{ padding: "6px 0", fontWeight: 700, color: "#111" }} colSpan={2}>Competitor Median</td>
-                <td style={{ textAlign: "right", fontWeight: 700 }}>{rupee(median)}</td>
-                <td style={{ textAlign: "right", fontWeight: 700, color: median > (yourRate || 0) ? "#16a34a" : "#dc2626" }}>
+                <td className="ff-num" style={{ textAlign: "right", fontWeight: 700 }}>{rupee(median)}</td>
+                <td className="ff-num" style={{ textAlign: "right", fontWeight: 700, color: median > (yourRate || 0) ? "#16a34a" : "#dc2626" }}>
                   {median > (yourRate || 0) ? "+" : ""}{rupee(median - (yourRate || 0))}
                 </td>
               </tr>
@@ -537,9 +538,9 @@ export default function PricingHub() {
             </>
           )}
 
-          <button className="ff-btn ff-btn-primary" onClick={applyRates} disabled={rateBusy} style={{ alignSelf: "flex-start" }}>
-            <Zap size={15} /> {rateBusy ? "Applying…" : "Apply Rates"}
-          </button>
+          <FfSubmitButton className="ff-btn-primary" onClick={applyRates} style={{ alignSelf: "flex-start" }} spinnerLabel="Applying…">
+            <Zap size={15} /> Apply Rates
+          </FfSubmitButton>
           {rateMsg && <p style={{ fontSize: 13, color: "var(--ff-accent)" }}>{rateMsg}</p>}
         </div>
       </Card>

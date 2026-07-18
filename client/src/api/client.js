@@ -1,30 +1,37 @@
 // Tiny fetch wrapper around the backend API.
+// (X-Tenant-Slug is stamped on every /api request by src/api/tenant.js.)
 const j = async (r) => {
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
     const err = new Error(body.error || r.statusText);
     err.status = r.status;
+    err.code = body.code; // e.g. TENANT_NOT_FOUND, NOT_IN_TENANT, WRONG_TENANT
     throw err;
   }
   return r.json();
 };
 
+export { getTenantSlug, setTenantSlug } from './tenant.js';
+
 /* ---------- token storage (admin session) ---------- */
 export const getToken = () => localStorage.getItem('ma_token');
-export const setSession = (token, user) => {
+export const setSession = (token, user, tenant) => {
   localStorage.setItem('ma_token', token);
   localStorage.setItem('ma_user', JSON.stringify(user || {}));
+  if (tenant) localStorage.setItem('ma_tenant', JSON.stringify(tenant));
 };
 export const getUser = () => { try { return JSON.parse(localStorage.getItem('ma_user') || '{}'); } catch { return {}; } };
-export const clearSession = () => { localStorage.removeItem('ma_token'); localStorage.removeItem('ma_user'); };
+export const getTenant = () => { try { return JSON.parse(localStorage.getItem('ma_tenant') || '{}'); } catch { return {}; } };
+export const clearSession = () => { localStorage.removeItem('ma_token'); localStorage.removeItem('ma_user'); localStorage.removeItem('ma_tenant'); };
 
 const auth = () => ({ Authorization: `Bearer ${getToken() || getEmployeeToken()}` });
 
 /* ---------- token storage (employee / staff portal session) ---------- */
 export const getEmployeeToken = () => localStorage.getItem('emp_token');
-export const setEmployeeSession = (token, employee) => {
+export const setEmployeeSession = (token, employee, tenant) => {
   localStorage.setItem('emp_token', token);
   localStorage.setItem('emp_user', JSON.stringify(employee || {}));
+  if (tenant) localStorage.setItem('ma_tenant', JSON.stringify(tenant));
 };
 export const getEmployeeUser = () => { try { return JSON.parse(localStorage.getItem('emp_user') || '{}'); } catch { return {}; } };
 export const clearEmployeeSession = () => { localStorage.removeItem('emp_token'); localStorage.removeItem('emp_user'); };

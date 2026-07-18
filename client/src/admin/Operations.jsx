@@ -9,6 +9,7 @@ import { useState, useRef } from "react";
 import { CheckCircle, Clock, AlertTriangle, Droplets, Calendar, BarChart3, Zap, Camera } from "lucide-react";
 import { useApi, apiFetch, rupee, fmtDate, todayISO, notify } from "./adminContext.js";
 import { Spinner, ApiError, SectionHeader, Card, Field, Grid2, StatCard } from "./ui.jsx";
+import FfSubmitButton from "../components/FfSubmitButton.jsx";
 
 const FREQUENCIES = ["Daily", "Weekly", "Fortnightly", "Monthly"];
 const FREQ_ICON = { Daily: Droplets, Weekly: Calendar, Fortnightly: Zap, Monthly: BarChart3 };
@@ -187,13 +188,14 @@ export default function Operations() {
               >
                 <Camera size={14}/> {photoFiles["Pool pH & Chlorine Check"] ? "Photo attached ✓" : "Add Photo (required)"}
               </button>
-              <button className="ff-btn ff-btn-primary"
+              <FfSubmitButton className="ff-btn-primary"
                 disabled={!poolComplete || busy || !photoFiles["Pool pH & Chlorine Check"]}
                 style={{ alignSelf:"flex-start", opacity: (!poolComplete || !photoFiles["Pool pH & Chlorine Check"]) ? 0.45 : 1 }}
                 title={!photoFiles["Pool pH & Chlorine Check"] ? "Attach a photo first" : ""}
-                onClick={() => submitLog({ task_name:"Pool pH & Chlorine Check", category:"Pool" }, { pH: Number(poolMetrics.pH), chlorine_ppm: Number(poolMetrics.chlorine_ppm) })}>
+                onClick={() => submitLog({ task_name:"Pool pH & Chlorine Check", category:"Pool" }, { pH: Number(poolMetrics.pH), chlorine_ppm: Number(poolMetrics.chlorine_ppm) })}
+                spinnerLabel="Logging…">
                 <Droplets size={15}/> Log Pool Metrics
-              </button>
+              </FfSubmitButton>
             </div>
           </div>
         </Card>
@@ -255,15 +257,16 @@ export default function Operations() {
                   >
                     <Camera size={14}/> {photoFiles[task.task_name] ? "Change" : "Add Photo"}
                   </button>
-                  <button
-                    className="ff-btn ff-btn-primary"
+                  <FfSubmitButton
+                    className="ff-btn-primary"
                     style={{ padding:"7px 14px", fontSize:12, opacity: photoFiles[task.task_name] ? 1 : 0.45 }}
                     onClick={() => submitLog(task)}
                     disabled={busy || !photoFiles[task.task_name]}
                     title={!photoFiles[task.task_name] ? "Attach a photo first" : ""}
+                    spinnerLabel="Logging…"
                   >
                     Log Completion
-                  </button>
+                  </FfSubmitButton>
                 </div>
               )}
             </div>

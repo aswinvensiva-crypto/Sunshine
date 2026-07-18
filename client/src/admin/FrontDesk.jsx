@@ -10,6 +10,7 @@ import { ArrowLeft, ArrowRight, ShieldCheck, Upload, AlertTriangle, Check, User,
 import { useApi, adminRooms, adminGuests, adminAvailableRooms, adminCreateBooking, adminLookupGuestByKyc, apiFetch, rupee, todayISO, notify } from "./adminContext.js";
 import { checkConflict } from "../api/client.js";
 import { Spinner, ApiError, SectionHeader, Field, Grid2, Card, Modal } from "./ui.jsx";
+import FfSubmitButton from "../components/FfSubmitButton.jsx";
 
 const GSTIN_REGEX = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
 const STEPS       = ["Guest Details", "KYC & ID", "Booking Details", "Payment Summary"];
@@ -364,14 +365,15 @@ export default function FrontDesk({ onNavigate }) {
                       </div>
                       {kycVerifyErr && <p className="ff-field-err" style={{ marginBottom: 10 }}>{kycVerifyErr}</p>}
                       {errors.existingGuestId && <p className="ff-field-err" style={{ marginBottom: 10 }}>{errors.existingGuestId}</p>}
-                      <button
-                        className="ff-btn ff-btn-primary"
+                      <FfSubmitButton
+                        className="ff-btn-primary"
                         onClick={verifyReturningGuest}
-                        disabled={kycVerifyBusy || !kycVerifyNum}
+                        disabled={!kycVerifyNum}
+                        spinnerLabel="Verifying…"
                         style={{ display: "flex", alignItems: "center", gap: 6 }}
                       >
-                        <ShieldCheck size={14} /> {kycVerifyBusy ? "Verifying…" : "Verify & fetch guest"}
-                      </button>
+                        <ShieldCheck size={14} /> Verify & fetch guest
+                      </FfSubmitButton>
                     </>
                   ) : (
                     <div>
@@ -613,9 +615,9 @@ export default function FrontDesk({ onNavigate }) {
               Next <ArrowRight size={15} />
             </button>
           ) : (
-            <button className="ff-btn ff-btn-primary" onClick={submit} disabled={busy}>
-              {busy ? "Checking in…" : <><Check size={15} /> Complete Check-In</>}
-            </button>
+            <FfSubmitButton className="ff-btn-primary" onClick={submit} spinnerLabel="Checking in…">
+              <Check size={15} /> Complete Check-In
+            </FfSubmitButton>
           )}
         </div>
       </div>

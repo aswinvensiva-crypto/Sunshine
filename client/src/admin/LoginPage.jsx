@@ -241,10 +241,18 @@ export default function LoginPage({ subtitle, hint, onLogin, isStaff }) {
     try {
       await onLogin(username.trim(), password);
     } catch (e2) {
+      // Multi-tenant error states are surfaced distinctly from a wrong password.
+      const byCode = {
+        TENANT_NOT_FOUND: 'Unknown resort — check the web address you are using.',
+        TENANT_SUSPENDED: 'This resort is currently suspended. Contact platform support.',
+        NOT_IN_TENANT:    "This account isn't part of this resort.",
+        WRONG_TENANT:     'Your session belongs to a different resort — please sign in again.',
+      };
       setErr(
-        e2.message === 'Failed to fetch'
+        byCode[e2.code] ||
+        (e2.message === 'Failed to fetch'
           ? "Can't reach the server — make sure the backend is running."
-          : e2.message,
+          : e2.message),
       );
     } finally { setBusy(false); }
   };

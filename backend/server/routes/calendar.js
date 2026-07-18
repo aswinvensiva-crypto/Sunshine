@@ -7,13 +7,18 @@
  *
  * Socket.io events (registered from initCalendarSocket(io)):
  *   client → server : ROOM_SWAP_REQUEST  { bookingId, newRoomId, newCheckIn, newCheckOut }
- *   server → client : ROOM_SWAP_BROADCAST { booking }
+ *   server → client : ROOM_SWAP_BROADCAST { booking }   (tenant room only)
  *   server → sender : ROOM_SWAP_ERROR    { message }
+ *
+ * Tenancy: REST runs on req.db; the socket handler runs on a forTenant()
+ * scope derived from the socket's verified JWT (socket.data.tenantId, set by
+ * the io middleware in server.js). Swap broadcasts go only to the tenant's
+ * room, never to every connected dashboard.
  */
 
 const express = require('express');
 const router = express.Router();
-const { pool } = require('../config/db');
+const { forTenant } = require('../config/db');
 
 /* ─────────────────────────────────────────────────────────────
    GET /api/admin/calendar
@@ -26,11 +31,12 @@ router.get('/', async (req, res) => {
   const endDate = new Date(startDate);
   endDate.setDate(endDate.getDate() + parseInt(days, 10));
   const endISO = endDate.toISOString().split('T')[0];
+  const tenantId = req.tenant.id;
 
   try {
     // Fetch all physical rooms, resolving room_type from the room_types table if the
     // text column is unpopulated (seed.sql only sets room_type_id).
-    const roomsResult = await pool.query(`
+    const roomsResult = await req.db.query(`
       SELECT
         r.id,
         r.room_number,
@@ -47,13 +53,14 @@ router.get('/', async (req, res) => {
         LIMIT 1
       ) rs ON true
       WHERE COALESCE(r.status, 'available') <> 'unavailable'
+        AND r.tenant_id = $1
       ORDER BY
         COALESCE(r.room_type_id, 0),
         r.room_number
-    `);
+    `, [tenantId]);
 
     // Fetch bookings overlapping the view window with guest data + approved special request
-    const bookingsResult = await pool.query(`
+    const bookingsResult = await req.db.query(`
       SELECT
         b.id,
         b.room_id,
@@ -90,10 +97,11 @@ router.get('/', async (req, res) => {
         ORDER BY created_at DESC LIMIT 1
       ) sr ON true
       WHERE b.status NOT IN ('cancelled')
+        AND b.tenant_id = $3
         AND b.check_in  < $2
         AND b.check_out > $1
       ORDER BY b.check_in, b.id
-    `, [startDate, endISO]);
+    `, [startDate, endISO, tenantId]);
 
     // Build room status map keyed by room id
     const roomStatusMap = {};
@@ -110,16 +118,17 @@ router.get('/', async (req, res) => {
     // If room_status_log table doesn't exist, fall back to simple query
     if (err.code === '42P01') {
       try {
-        const roomsSimple = await pool.query(`
+        const roomsSimple = await req.db.query(`
           SELECT r.id, r.room_number,
             COALESCE(NULLIF(r.room_type,''), rt.name) AS room_type,
             COALESCE(r.base_price, rt.base_rate) AS base_price
           FROM rooms r
           LEFT JOIN room_types rt ON rt.id = r.room_type_id
           WHERE COALESCE(r.status, 'available') <> 'unavailable'
+            AND r.tenant_id = $1
           ORDER BY COALESCE(r.room_type_id,0), r.room_number
-        `);
-        const bookingsSimple = await pool.query(`
+        `, [tenantId]);
+        const bookingsSimple = await req.db.query(`
           SELECT
             b.id, b.room_id, b.guest_id,
             b.check_in::text AS check_in,
@@ -132,9 +141,10 @@ router.get('/', async (req, res) => {
           FROM bookings b
           JOIN guests g ON g.id = b.guest_id
           WHERE b.status NOT IN ('cancelled')
+            AND b.tenant_id = $3
             AND b.check_in < $2 AND b.check_out > $1
           ORDER BY b.check_in, b.id
-        `, [startDate, endISO]);
+        `, [startDate, endISO, tenantId]);
 
         const statusMap = {};
         roomsSimple.rows.forEach(r => { statusMap[r.id] = 'Vacant Clean'; });
@@ -167,7 +177,7 @@ router.post('/swap', async (req, res) => {
   if (!bookingId || !newRoomId || !newCheckIn || !newCheckOut) {
     return res.status(400).json({ error: 'bookingId, newRoomId, newCheckIn, newCheckOut are required' });
   }
-  const result = await executeSwap({ bookingId, newRoomId, newCheckIn, newCheckOut });
+  const result = await executeSwap(req.tenant.id, { bookingId, newRoomId, newCheckIn, newCheckOut });
   if (result.error) return res.status(409).json({ error: result.error });
   return res.json({ booking: result.booking });
 });
@@ -175,23 +185,36 @@ router.post('/swap', async (req, res) => {
 /* ─────────────────────────────────────────────────────────────
    Core swap transaction — shared by REST endpoint + socket handler.
    Uses SERIALIZABLE isolation to prevent race-condition overbooking.
+   Runs on a tenant-pinned client; every statement also filters by
+   tenant_id explicitly.
    ───────────────────────────────────────────────────────────── */
-async function executeSwap({ bookingId, newRoomId, newCheckIn, newCheckOut }) {
-  const client = await pool.connect();
+async function executeSwap(tenantId, { bookingId, newRoomId, newCheckIn, newCheckOut }) {
+  const db = forTenant(tenantId);
+  const client = await db.connect();
   try {
     await client.query('BEGIN');
     await client.query('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE');
+
+    // The target room must belong to this tenant.
+    const roomOk = await client.query(
+      `SELECT 1 FROM rooms WHERE id = $1 AND tenant_id = $2`, [newRoomId, tenantId]
+    );
+    if (!roomOk.rows[0]) {
+      await client.query('ROLLBACK');
+      return { error: 'Target room not found.' };
+    }
 
     // Overlap check: any OTHER active booking in the target room during this span?
     const overlap = await client.query(`
       SELECT id FROM bookings
       WHERE room_id   = $1
         AND id       != $2
+        AND tenant_id = $5
         AND status NOT IN ('cancelled', 'checked_out')
         AND check_in  < $4
         AND check_out > $3
       FOR UPDATE
-    `, [newRoomId, bookingId, newCheckIn, newCheckOut]);
+    `, [newRoomId, bookingId, newCheckIn, newCheckOut, tenantId]);
 
     if (overlap.rows.length > 0) {
       await client.query('ROLLBACK');
@@ -204,10 +227,15 @@ async function executeSwap({ bookingId, newRoomId, newCheckIn, newCheckOut }) {
          SET room_id   = $1,
              check_in  = $2,
              check_out = $3
-       WHERE id = $4
+       WHERE id = $4 AND tenant_id = $5
       RETURNING id, room_id, check_in::text AS check_in, check_out::text AS check_out,
                 status, ota_source, reference, guest_id
-    `, [newRoomId, newCheckIn, newCheckOut, bookingId]);
+    `, [newRoomId, newCheckIn, newCheckOut, bookingId, tenantId]);
+
+    if (!rows[0]) {
+      await client.query('ROLLBACK');
+      return { error: 'Booking not found.' };
+    }
 
     await client.query('COMMIT');
     return { booking: rows[0] };
@@ -222,11 +250,17 @@ async function executeSwap({ bookingId, newRoomId, newCheckIn, newCheckOut }) {
 
 /* ─────────────────────────────────────────────────────────────
    Socket.io handler — call once from server.js after io is created.
-   initCalendarSocket(io) registers the ROOM_SWAP_REQUEST listener.
+   server.js authenticates each socket (JWT) and joins it to its
+   tenant room; here we only trust socket.data.tenantId.
    ───────────────────────────────────────────────────────────── */
 function initCalendarSocket(io) {
   io.on('connection', socket => {
     socket.on('ROOM_SWAP_REQUEST', async payload => {
+      const tenantId = socket.data.tenantId;
+      if (!tenantId) {
+        socket.emit('ROOM_SWAP_ERROR', { message: 'Not authenticated.' });
+        return;
+      }
       const { bookingId, newRoomId, newCheckIn, newCheckOut } = payload || {};
 
       if (!bookingId || !newRoomId || !newCheckIn || !newCheckOut) {
@@ -234,15 +268,15 @@ function initCalendarSocket(io) {
         return;
       }
 
-      const result = await executeSwap({ bookingId, newRoomId, newCheckIn, newCheckOut });
+      const result = await executeSwap(tenantId, { bookingId, newRoomId, newCheckIn, newCheckOut });
 
       if (result.error) {
         socket.emit('ROOM_SWAP_ERROR', { message: result.error });
         return;
       }
 
-      // Broadcast updated booking coordinates to ALL connected dashboards
-      io.emit('ROOM_SWAP_BROADCAST', { booking: result.booking });
+      // Broadcast updated booking coordinates to this tenant's dashboards only
+      io.to(`tenant:${tenantId}`).emit('ROOM_SWAP_BROADCAST', { booking: result.booking });
     });
   });
 }

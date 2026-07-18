@@ -1,5 +1,4 @@
 const router = require('express').Router();
-const { pool } = require('../config/db');
 
 // GET /api/availability?check_in=YYYY-MM-DD&check_out=YYYY-MM-DD&guests=2
 router.get('/', async (req, res) => {
@@ -17,19 +16,20 @@ router.get('/', async (req, res) => {
     // For each room type, look at every night in the range. A type is bookable
     // only if EVERY night has inventory, none is closed, and the tightest night
     // still has at least one unit free.
-    const { rows } = await pool.query(
+    const { rows } = await req.db.query(
       `SELECT rt.id, rt.code, rt.name, rt.description, rt.max_occupancy, rt.base_rate,
               MIN(inv.total_units - inv.booked_units) AS available_units,
               ROUND(AVG(inv.rate), 2)                 AS avg_rate,
               bool_or(inv.is_closed)                  AS any_closed,
               COUNT(*)                                AS nights_covered
          FROM room_types rt
-         JOIN inventory inv ON inv.room_type_id = rt.id
+         JOIN inventory inv ON inv.room_type_id = rt.id AND inv.tenant_id = rt.tenant_id
         WHERE inv.stay_date >= $1
           AND inv.stay_date <  $2
           AND rt.max_occupancy >= $3
+          AND rt.tenant_id = $4
         GROUP BY rt.id`,
-      [check_in, check_out, guests]
+      [check_in, check_out, guests, req.tenant.id]
     );
 
     const room_types = rows

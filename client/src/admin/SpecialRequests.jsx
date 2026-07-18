@@ -3,6 +3,7 @@ import { Clock, Plus, X, Check, AlertTriangle } from "lucide-react";
 import { useApi, rupee, fmtDate, notify, apiFetch } from "./adminContext.js";
 import { adminSpecialRequests, adminCreateSpecialRequest, adminUpdateSpecialRequest, adminBookings } from "../api/client.js";
 import { Spinner, ApiError, SectionHeader, TableWrap, Modal, Field, Grid2, Card } from "./ui.jsx";
+import FfSubmitButton from "../components/FfSubmitButton.jsx";
 
 const STATUS_STYLE = {
   pending:  { bg: "#fef3c7", color: "#92400e", label: "Pending" },
@@ -174,14 +175,15 @@ export default function SpecialRequests() {
                     <td>
                       {r.status === "pending" ? (
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                          <button
-                            className="ff-btn ff-btn-primary"
+                          <FfSubmitButton
+                            className="ff-btn-primary"
                             style={{ padding: "3px 10px", fontSize: 11 }}
                             disabled={!!busy}
                             onClick={() => updateStatus(r.id, "approved")}
+                            spinnerLabel="…"
                           >
-                            {busy === "approved" ? "…" : <><Check size={11} /> Approve</>}
-                          </button>
+                            <Check size={11} /> Approve
+                          </FfSubmitButton>
                           <button
                             className="ff-btn ff-btn-outline"
                             style={{ padding: "3px 10px", fontSize: 11, color: "var(--ff-danger)", borderColor: "var(--ff-danger)" }}
@@ -280,9 +282,9 @@ export default function SpecialRequests() {
               <textarea value={addForm.notes} onChange={e => updAdd("notes", e.target.value)} rows={2} placeholder="Guest preference or special instruction…" />
             </Field>
 
-            <button type="submit" className="ff-btn ff-btn-primary" style={{ width: "100%", justifyContent: "center", marginTop: 4 }} disabled={addBusy}>
-              {addBusy ? "Creating…" : "Create Request"}
-            </button>
+            <FfSubmitButton className="ff-btn-primary" style={{ width: "100%", justifyContent: "center", marginTop: 4 }} onClick={submitAdd} spinnerLabel="Creating…">
+              Create Request
+            </FfSubmitButton>
           </form>
         </Modal>
       )}
