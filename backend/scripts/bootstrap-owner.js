@@ -7,7 +7,8 @@
  * The password is read from BOOTSTRAP_OWNER_PASSWORD (>= 12 chars). If it is
  * not set, a random one is generated and printed ONCE. Refuses to run when
  * the tenant already has an owner, unless --reset is passed (which rotates
- * that owner's password and revokes their sessions).
+ * that owner's password and revokes their sessions), or --if-missing (exit
+ * quietly; used by db/deploy.js when BOOTSTRAP_OWNER_* env vars are set).
  */
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 const crypto = require('crypto');
@@ -24,6 +25,7 @@ async function main() {
   const slug = arg('tenant') || process.env.DEFAULT_TENANT_SLUG || 'sunshine-original';
   const username = arg('username');
   const reset = process.argv.includes('--reset');
+  const ifMissing = process.argv.includes('--if-missing'); // no-op (exit 0) when an owner exists
   if (!username) throw new Error('--username is required');
 
   let password = process.env.BOOTSTRAP_OWNER_PASSWORD;
@@ -59,6 +61,11 @@ async function main() {
         WHERE u.tenant_id = $1`, [tenantId]);
     const hash = await bcrypt.hash(password, 12);
 
+    if (owners.rows.length && ifMissing) {
+      await client.query('ROLLBACK');
+      console.log(`Tenant '${slug}' already has an owner — nothing to do.`);
+      return;
+    }
     if (owners.rows.length && !reset) {
       throw new Error(`Tenant '${slug}' already has an owner ('${owners.rows[0].username}'). Use --reset to rotate their password.`);
     }

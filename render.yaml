@@ -54,6 +54,10 @@ services:
         value: "3"
       - key: JWT_SECRET
         generateValue: true
+      - key: BOOTSTRAP_OWNER_USERNAME   # first /admin owner, created only if none exists
+        value: admin
+      - key: BOOTSTRAP_OWNER_PASSWORD
+        sync: false
       - key: PLATFORM_ADMIN_USERNAME
         value: admin
       - key: PLATFORM_ADMIN_PASSWORD

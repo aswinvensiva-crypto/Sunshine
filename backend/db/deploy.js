@@ -40,5 +40,11 @@ function run(script) {
   }
   console.log('[deploy] Applying migrations…');
   run('migrate.js');
+  // Hosts without a shell (e.g. Render Free): create the first owner from env.
+  if (process.env.BOOTSTRAP_OWNER_USERNAME && process.env.BOOTSTRAP_OWNER_PASSWORD) {
+    const r = spawnSync(process.execPath, [path.join(__dirname, '..', 'scripts', 'bootstrap-owner.js'),
+      '--username', process.env.BOOTSTRAP_OWNER_USERNAME, '--if-missing'], { stdio: 'inherit', env: process.env });
+    if (r.status !== 0) { console.error('[deploy] owner bootstrap failed'); process.exit(r.status || 1); }
+  }
   console.log('[deploy] Database ready.');
 })().catch((e) => { console.error('[deploy] FAILED:', e.message); process.exit(1); });
