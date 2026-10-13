@@ -24,6 +24,23 @@ export const getUser = () => { try { return JSON.parse(localStorage.getItem('ma_
 export const getTenant = () => { try { return JSON.parse(localStorage.getItem('ma_tenant') || '{}'); } catch { return {}; } };
 export const clearSession = () => { localStorage.removeItem('ma_token'); localStorage.removeItem('ma_user'); localStorage.removeItem('ma_tenant'); };
 
+/* ---------- permissions (server is authoritative; this only hides UI) ---------- */
+const sessionUser = () => (getToken() ? getUser() : getEmployeeUser());
+export const getPermissions = () => new Set(sessionUser()?.permissions || []);
+/** can('folio.refund') or can('a','b') = any of. UI hint only; the server enforces. */
+export const can = (...codes) => { const p = getPermissions(); return codes.some((c) => p.has(c)); };
+export const hasPermissionData = () => Array.isArray(sessionUser()?.permissions);
+
+/** Re-read role + permissions from the server (after an upgrade / role change). */
+export async function refreshPermissions() {
+  const tok = getToken() || getEmployeeToken();
+  if (!tok) return false;
+  const me = await fetch('/api/auth/me', { headers: { Authorization: `Bearer ${tok}` } }).then(j);
+  if (getToken()) localStorage.setItem('ma_user', JSON.stringify({ ...getUser(), role_code: me.role_code, permissions: me.permissions }));
+  else localStorage.setItem('emp_user', JSON.stringify({ ...getEmployeeUser(), role_code: me.role_code, permissions: me.permissions }));
+  return true;
+}
+
 const auth = () => ({ Authorization: `Bearer ${getToken() || getEmployeeToken()}` });
 
 /* ---------- token storage (employee / staff portal session) ---------- */
@@ -106,6 +123,22 @@ export const sendInvoice    = (id) =>
 /* ---------- employee portal ---------- */
 export const employeeLogin = (username, password) =>
   fetch('/api/employee/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) }).then(j);
+
+/* Housekeeping PIN sign-in: the phone is bound to the employee by a one-time manager code. */
+export const getDeviceId = () => {
+  let id = localStorage.getItem('hk_device_id');
+  if (!id) {
+    const a = new Uint8Array(16);
+    crypto.getRandomValues(a);
+    id = Array.from(a, (b) => b.toString(16).padStart(2, '0')).join('');
+    localStorage.setItem('hk_device_id', id);
+  }
+  return id;
+};
+export const enrolDevice = (code, label) =>
+  fetch('/api/employee/enrol-device', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code, device_id: getDeviceId(), label }) }).then(j);
+export const employeePinLogin = (username, pin) =>
+  fetch('/api/employee/pin-login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, pin, device_id: getDeviceId() }) }).then(j);
 
 export const setEmployeeCredentials = (id, payload) =>
   fetch(`/api/admin/employees/${id}/credentials`, { method: 'PUT', headers: { ...auth(), 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).then(j);

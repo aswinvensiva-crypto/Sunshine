@@ -19,13 +19,14 @@
 const express = require('express');
 const router = express.Router();
 const { forTenant } = require('../config/db');
+const { requirePermission } = require('../modules/identity/http/requirePermission');
 
 /* ─────────────────────────────────────────────────────────────
    GET /api/admin/calendar
    Query params: start (ISO date), days (default 14)
    Returns rooms with live status + bookings with guest info
    ───────────────────────────────────────────────────────────── */
-router.get('/', async (req, res) => {
+router.get('/', requirePermission('reservation.view'), async (req, res) => {
   const { start, days = 14 } = req.query;
   const startDate = start || new Date().toISOString().split('T')[0];
   const endDate = new Date(startDate);
@@ -172,7 +173,7 @@ router.get('/', async (req, res) => {
    REST fallback when socket.io unavailable on the client.
    Body: { bookingId, newRoomId, newCheckIn, newCheckOut }
    ───────────────────────────────────────────────────────────── */
-router.post('/swap', async (req, res) => {
+router.post('/swap', requirePermission('reservation.modify'), async (req, res) => {
   const { bookingId, newRoomId, newCheckIn, newCheckOut } = req.body;
   if (!bookingId || !newRoomId || !newCheckIn || !newCheckOut) {
     return res.status(400).json({ error: 'bookingId, newRoomId, newCheckIn, newCheckOut are required' });

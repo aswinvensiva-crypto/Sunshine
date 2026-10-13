@@ -17,6 +17,7 @@ const pool = new Pool({
   user:     process.env.DB_USER || 'postgres',
   password: process.env.DB_PASSWORD || 'postgres',
   database: process.env.DB_NAME || 'sunshine',
+  ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: true } : undefined,
 });
 
 async function run() {
@@ -30,36 +31,13 @@ async function run() {
     console.log('Loading seed data (15 rooms + 365 days of inventory)...');
     await pool.query(seed);
 
-    // ---- Create the first admin user (username + password from .env) ----
-    const username = process.env.ADMIN_USERNAME || 'admin';
-    const password = process.env.ADMIN_PASSWORD || 'admin123';
-    const hash = await bcrypt.hash(password, 10);
-    await pool.query(
-      `INSERT INTO users (username, full_name, password_hash, role)
-       VALUES ($1, 'Resort Owner', $2, 'owner')
-       ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash`,
-      [username, hash]
-    );
-    console.log(`Admin user ready -> username: "${username}"  password: "${password}"`);
-
-    // ---- Create default staff employee (only if no employees with credentials exist) ----
-    const { rows: ec } = await pool.query(`SELECT COUNT(*)::int AS n FROM employees WHERE username IS NOT NULL`);
-    if (ec[0].n === 0) {
-      const staffUser = process.env.STAFF_USERNAME || 'staff';
-      const staffPass = process.env.STAFF_PASSWORD || 'staff123';
-      const staffHash = await bcrypt.hash(staffPass, 10);
-      await pool.query(
-        `INSERT INTO employees (first_name, last_name, role, roles, is_active, username, password_hash)
-         VALUES ('Priya', 'Kumar', 'Front Desk', ARRAY['Front Desk'], true, $1, $2)
-         ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash`,
-        [staffUser, staffHash]
-      );
-      console.log(`Default staff user ready -> username: "${staffUser}"  password: "${staffPass}"`);
-    }
+    // No default logins are created. The seeded admin/admin123 and staff/staff123
+    // credentials were removed (Prompt 7.1). After `node db/migrate.js`, create the
+    // first owner with:  npm run bootstrap-owner -- --username <name>
 
     // ---- Sample data for the dashboard (only if there are no bookings yet) ----
     const { rows: bc } = await pool.query('SELECT COUNT(*)::int AS n FROM bookings');
-    if (bc[0].n === 0) {
+    if (bc[0].n === 0 && process.env.SEED_SAMPLE_DATA !== 'false') {
       console.log('Adding sample guests, bookings and expenses...');
 
       const rt = await pool.query('SELECT id, base_rate FROM room_types ORDER BY id');

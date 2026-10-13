@@ -11,6 +11,10 @@
 const router = require('express').Router();
 const crypto = require('crypto');
 const { requireAuth } = require('../middleware/auth');
+const { requiresApproval } = require('../modules/identity/domain/approvals');
+const { createApproval, approvalPolicy } = require('../modules/identity/application/approvals');
+const { issueGatewayRefund } = require('../services/refunds');
+const { requirePermission } = require('../modules/identity/http/requirePermission');
 
 function razorpayKeys(req) {
   const s = req.tenant?.settings || {};
@@ -33,7 +37,7 @@ function getRazorpay(req) {
 }
 
 /* POST /api/payments/create-order  { booking_id, amount } */
-router.post('/create-order', requireAuth, async (req, res) => {
+router.post('/create-order', requireAuth, requirePermission('folio.post'), async (req, res) => {
   const { booking_id, amount } = req.body || {};
   if (!booking_id || !amount) return res.status(400).json({ error: 'booking_id and amount are required' });
 
@@ -67,7 +71,7 @@ router.post('/create-order', requireAuth, async (req, res) => {
 });
 
 /* POST /api/payments/verify  { booking_id, razorpay_order_id, razorpay_payment_id, razorpay_signature } */
-router.post('/verify', requireAuth, async (req, res) => {
+router.post('/verify', requireAuth, requirePermission('folio.post'), async (req, res) => {
   const { booking_id, razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body || {};
   if (!booking_id || !razorpay_order_id || !razorpay_payment_id || !razorpay_signature)
     return res.status(400).json({ error: 'booking_id, razorpay_order_id, razorpay_payment_id and razorpay_signature are required' });
@@ -105,30 +109,26 @@ router.post('/verify', requireAuth, async (req, res) => {
 });
 
 /* POST /api/payments/refund  { booking_id, payment_id, amount } */
-router.post('/refund', requireAuth, async (req, res) => {
+router.post('/refund', requireAuth, requirePermission('folio.refund'), async (req, res) => {
   const { booking_id, payment_id, amount } = req.body || {};
   if (!booking_id || !payment_id || !amount)
     return res.status(400).json({ error: 'booking_id, payment_id and amount are required' });
 
-  const rz = getRazorpay(req);
-  if (!rz) return res.status(503).json({ error: 'Razorpay is not configured for this resort' });
-
   try {
-    // Never refund a booking that isn't ours.
-    const own = await req.db.query(
-      'SELECT 1 FROM bookings WHERE id=$1 AND tenant_id=$2', [booking_id, req.tenant.id]
-    );
-    if (!own.rows[0]) return res.status(404).json({ error: 'Booking not found' });
-
-    const refund = await rz.payments.refund(payment_id, { amount: Math.round(Number(amount) * 100) });
-
-    await req.db.query(
-      `INSERT INTO payment_transactions (booking_id, amount, gst_amount, payment_method, gateway_reference_token, status, tenant_id)
-       VALUES ($1,$2,0,'razorpay',$3,'refunded',$4)`,
-      [booking_id, amount, refund.id, req.tenant.id]
-    );
-
-    res.json({ ok: true, refund_id: refund.id });
+    const gate = requiresApproval({ kind: 'refund.gateway', amount }, req.user.permissions, approvalPolicy());
+    if (gate.ok && gate.value) {
+      const ap = await createApproval(req.db, req.tenant, req.user, {
+        kind: 'refund.gateway', amount, reason: req.body.reason || 'Gateway refund',
+        payload: { booking_id: Number(booking_id), payment_id, amount: Number(amount) },
+      });
+      return res.status(202).json({ ok: true, pending_approval: true, approval_id: ap.id });
+    }
+    const out = await issueGatewayRefund(req.db, req.tenant, { bookingId: booking_id, paymentId: payment_id, amount });
+    if (!out.ok) {
+      const status = out.error.code === 'GATEWAY_NOT_CONFIGURED' ? 503 : 404;
+      return res.status(status).json({ error: out.error.message, code: out.error.code });
+    }
+    res.json({ ok: true, refund_id: out.value.refund_id });
   } catch (err) {
     console.error('[payments/refund]', err.message);
     res.status(500).json({ error: err.message });
@@ -136,7 +136,7 @@ router.post('/refund', requireAuth, async (req, res) => {
 });
 
 /* GET /api/payments/transactions?booking_id= */
-router.get('/transactions', requireAuth, async (req, res) => {
+router.get('/transactions', requireAuth, requirePermission('folio.view'), async (req, res) => {
   const { booking_id } = req.query;
   try {
     const where = booking_id ? 'WHERE pt.tenant_id = $1 AND pt.booking_id = $2' : 'WHERE pt.tenant_id = $1';

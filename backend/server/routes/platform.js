@@ -12,6 +12,7 @@
  *   PUT   /api/platform/tenants/:id/settings        { razorpay_key_id?, ... }
  *   POST  /api/platform/tenants/:id/impersonate     → short-lived owner token for support
  */
+const { provisionTenant } = require('../modules/identity/infra/rbacRepo');
 const router = require('express').Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -112,6 +113,8 @@ router.post('/tenants', requirePlatformAdmin, async (req, res) => {
        VALUES ($1, $2, $3, $4, 'owner') RETURNING id, username, role`,
       [tenant.id, owner.username, owner.full_name || null, hash]
     );
+    // Roles, permissions and the owner's membership (Prompt 7.1).
+    await provisionTenant(client, tenant.id);
     await client.query('COMMIT');
     invalidateTenantCache(slug);
     res.status(201).json({ tenant, owner: u.rows[0] });

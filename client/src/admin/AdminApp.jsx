@@ -5,9 +5,9 @@ import {
   Moon, Sun, LayoutGrid, LogOut, ChevronRight, X,
   LayoutDashboard, ConciergeBell, Zap, Scale, Sparkles,
   Users, CheckSquare, Camera, ClipboardList, Bell, BookOpen,
-  Banknote, Clock, Star, ReceiptText, Home, ListChecks, ArrowLeftRight,
+  Banknote, Clock, Star, ReceiptText, Home, ListChecks, ArrowLeftRight, ShieldCheck,
 } from "lucide-react";
-import { login, setSession, getUser, getToken, clearSession, initToaster } from "./adminContext.js";
+import { login, setSession, getUser, getToken, clearSession, initToaster, can, refreshPermissions, hasPermissionData } from "./adminContext.js";
 import { getTenant } from "../api/client.js";
 import LoginPage from "./LoginPage.jsx";
 import ShortcutLayer from "../components/ShortcutLayer.jsx";
@@ -32,6 +32,7 @@ import SpecialRequests  from "./SpecialRequests.jsx";
 import FeedbackAdmin        from "./FeedbackAdmin.jsx";
 import CheckoutExtendPage   from "./CheckoutExtendPage.jsx";
 import Guests               from "./Guests.jsx";
+import Access               from "./Access.jsx";
 
 /* ── Navigation groups for the grid dropdown ── */
 const MENU_GROUPS = [
@@ -71,9 +72,21 @@ const MENU_GROUPS = [
       { key:"shiftmaster",    label:"Shift Master",  sub:"Default shift times",      icon:BookOpen,        color:"jq-ic-indigo" },
       { key:"authentication", label:"Notifications", sub:"Email & WhatsApp log",     icon:Bell,            color:"jq-ic-blue"   },
       { key:"feedback",       label:"Feedback",      sub:"Guest satisfaction",       icon:Star,            color:"jq-ic-yellow" },
+      { key:"access",         label:"Access",        sub:"Users, roles & approvals", icon:ShieldCheck,     color:"jq-ic-red"    },
     ],
   },
 ];
+
+/* Which permission each page needs (any-of). UI hint only; the API enforces. */
+const NAV_PERMS = {
+  dashboard: ["dashboard.view"], calendar: ["reservation.view"], frontdesk: ["reservation.view"],
+  bookings: ["reservation.view"], "checkout-extend": ["reservation.checkout"], roomtypes: ["room.view"], rooms: ["room.view"],
+  specialrequests: ["reservation.view"], pricing: ["pricing.view", "rate.edit"], accounts: ["report.view"],
+  dailypayments: ["report.view"], addexpense: ["expense.post"], tasks: ["task.view"], routines: ["task.view"],
+  operations: ["operations.log"], guests: ["guest.view"], staff: ["staff.view"], shiftmaster: ["shift.view"],
+  authentication: ["notification.view"], feedback: ["feedback.view"], access: ["user.manage", "approval.decide", "folio.refund"],
+};
+const allowed = (key) => can(...(NAV_PERMS[key] || ["dashboard.view"]));
 
 /* Quick-access tabs always visible in the strip */
 const QUICK_TABS = [
@@ -127,6 +140,7 @@ const TOP_NAV_DROPDOWNS = [
       { key:"guests",        label:"Guests",        icon:Users           },
       { key:"feedback",      label:"Feedback",      icon:Star            },
       { key:"authentication",label:"Notifications", icon:Bell            },
+      { key:"access",        label:"Access",        icon:ShieldCheck     },
     ],
   },
 ];
@@ -154,7 +168,6 @@ export default function AdminApp() {
         ? <AdminShell onLogout={() => { clearSession(); window.location.href = '/'; }} />
         : <LoginPage
             subtitle="Resort Management System"
-            hint={<>Default: <b>admin</b> / <b>admin123</b></>}
             onLogin={async (u, p) => { const { token, user, tenant } = await login(u, p); setSession(token, user, tenant); setAuthed(true); }}
           />
       }
@@ -193,6 +206,13 @@ function FrontDeskPanel({ onClose, onNavigate, dark }) {
 /* ── Admin shell ── */
 function AdminShell({ onLogout }) {
   const user = getUser();
+  const [, setPermTick] = useState(0);
+  /* Sessions created before RBAC have no permission list, so fetch it once. */
+  useEffect(() => {
+    refreshPermissions().then(() => setPermTick(t => t + 1)).catch(() => {});
+  }, []);
+  const visibleMenus  = TOP_NAV_DROPDOWNS.map(m => ({ ...m, items: m.items.filter(i => allowed(i.key)) })).filter(m => m.items.length);
+  const visibleGroups = MENU_GROUPS.map(g => ({ ...g, items: g.items.filter(i => allowed(i.key)) })).filter(g => g.items.length);
   const [active,          setActive]          = useState("dashboard");
   const [navParams,       setNavParams]       = useState({});
   const [menuOpen,        setMenuOpen]        = useState(false);
@@ -251,7 +271,16 @@ function AdminShell({ onLogout }) {
 
   const Page = () => {
     const props = { onNavigate: navigate, navParams };
+    if (hasPermissionData() && !allowed(active)) {
+      return (
+        <div className="ff-page" style={{ padding: 40, textAlign: "center", color: "var(--ff-muted)" }}>
+          <ShieldCheck size={32} /><h3>You don't have access to this page</h3>
+          <p>Ask the owner to change your role if you need it.</p>
+        </div>
+      );
+    }
     switch (active) {
+      case "access":           return <Access           {...props} />;
       case "calendar":         return <CalendarView     {...props} />;
       case "dashboard":        return <Dashboard        {...props} />;
       case "frontdesk":        return <FrontDesk        {...props} />;
@@ -288,7 +317,7 @@ function AdminShell({ onLogout }) {
 
         {/* Centre: dropdown nav buttons */}
         <nav className="jq-topbar-nav">
-          {TOP_NAV_DROPDOWNS.map(menu => {
+          {visibleMenus.map(menu => {
             const isGroupActive = menu.items.some(i => i.key === active);
             const isOpen = activeDropdown === menu.key;
             return (
@@ -385,7 +414,7 @@ function AdminShell({ onLogout }) {
         <>
           <div className="jq-menu-overlay" onClick={() => setMenuOpen(false)} />
           <div className="jq-menu-panel">
-            {MENU_GROUPS.map(group => (
+            {visibleGroups.map(group => (
               <div key={group.section} className="jq-menu-section">
                 <p className="jq-menu-section-title">{group.section}</p>
                 <div className="jq-menu-grid">

@@ -227,14 +227,26 @@ everything beyond taking direct bookings.
 website footer and click **"Staff login"**. You'll be asked for a username and
 password before anything loads.
 
-**Default login** (created by `npm run db:setup`):
+**First login (no default password exists any more).** After `npm run db:setup`
+and `npm run db:migrate`, create the owner login once:
 
-| Username | Password |
-|---|---|
-| `admin` | `admin123` |
+```bash
+cd backend
+npm run bootstrap-owner -- --username owner
+```
 
-Change these by editing `ADMIN_USERNAME` / `ADMIN_PASSWORD` in `backend/.env`
-before running `npm run db:setup` (or add more staff from the Staff page).
+Set `BOOTSTRAP_OWNER_PASSWORD` (12+ chars) in the environment first, or leave it
+unset and a random password is generated and printed once. Re-running refuses
+if an owner already exists; use `--reset` to rotate that owner's password.
+
+**Roles** (owner assigns them under *Access* in the admin menu): Owner, Manager,
+Front Desk, Housekeeping, Night Auditor, Accountant (read-only), Group Manager.
+Refunds above `REFUND_APPROVAL_THRESHOLD` (default 2000) requested by anyone but
+the owner wait for the owner's approval. Production needs `JWT_SECRET` (32+ random
+characters) or the server refuses to start.
+
+Run the tests with `cd backend && npm test` (add `TEST_PG=1` to include the
+Postgres-backed suite against a scratch database).
 
 **What's inside the admin page:**
 
