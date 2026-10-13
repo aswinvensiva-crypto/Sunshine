@@ -1,7 +1,12 @@
 node_modules/
 .env
+.env.*
+!.env.example
+.baileys_auth*/
 dist/
 *.log
 .DS_Store
 .wwebjs_auth/
 .wwebjs_cache/
+backend/uploads/
+.claude/

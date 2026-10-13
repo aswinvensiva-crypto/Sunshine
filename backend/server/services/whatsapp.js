@@ -25,6 +25,7 @@
 'use strict';
 
 const path = require('path');
+const fs   = require('fs');
 const pino = require('pino');
 const qrTerminal = require('qrcode-terminal');
 
@@ -36,7 +37,7 @@ const {
 } = require('@whiskeysockets/baileys');
 
 /* ── constants ────────────────────────────────────────────────────────── */
-const AUTH_DIR        = path.join(__dirname, '..', '..', '.baileys_auth');
+const AUTH_DIR        = require('../config/paths').WHATSAPP_AUTH_DIR;
 const QUEUE_TIMEOUT   = 600_000; // 10 minutes
 const RECONNECT_DELAY = 5_000;
 const RETRY_DELAY     = 10_000;
@@ -46,6 +47,8 @@ let sock         = null;
 let ready        = false;
 let initializing = false;
 let pendingQueue = []; // { jid, payload, resolve, timer }
+let lastQr       = null; // latest raw QR string, null once linked
+let lastResetAt  = 0;    // throttle for automatic session reset
 
 /* ── lazy DB pool (admin: queue writes are system-scope, see header) ──── */
 let _pool = null;
@@ -163,12 +166,14 @@ async function initWhatsApp() {
     /* ── connection lifecycle ─────────────────────────────────────── */
     sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
       if (qr) {
+        lastQr = qr;
         console.log('\n[whatsapp] Scan this QR code with the owner\'s WhatsApp:\n');
         qrTerminal.generate(qr, { small: true });
         console.log('\n[whatsapp] Waiting for QR scan…\n');
       }
 
       if (connection === 'open') {
+        lastQr       = null;
         ready        = true;
         initializing = false;
         console.log('[whatsapp] ✅ Connected — messages will be sent from the owner\'s number.');
@@ -186,8 +191,18 @@ async function initWhatsApp() {
 
         if (loggedOut || badSession) {
           const hint = loggedOut ? 'Logged out by WhatsApp.' : 'Bad session — corrupted credentials.';
-          console.error(`[whatsapp] ${hint} Delete .baileys_auth/ and restart to re-scan QR.`);
           flushQueueWithError(loggedOut ? 'whatsapp_logged_out' : 'bad_session');
+          // A dead session can never reconnect. Archive it (not delete) and start
+          // a fresh pairing so a new QR appears; throttled to avoid a loop.
+          if (Date.now() - lastResetAt > 60_000) {
+            lastResetAt = Date.now();
+            const archive = `${AUTH_DIR}.${new Date().toISOString().replace(/[:.]/g, '-')}.bak`;
+            try { fs.renameSync(AUTH_DIR, archive); } catch (e) { console.error('[whatsapp] could not archive old session:', e.message); }
+            console.warn(`[whatsapp] ${hint} Old session archived -> ${path.basename(archive)}. Starting a fresh QR pairing…`);
+            setTimeout(initWhatsApp, 1_000);
+          } else {
+            console.error(`[whatsapp] ${hint} Repeated failure — delete .baileys_auth/ manually and restart.`);
+          }
           return;
         }
 
@@ -205,7 +220,7 @@ async function initWhatsApp() {
 }
 
 /* ── 2-minute heartbeat: drain DB queue whenever socket is alive ────── */
-setInterval(() => { if (ready) drainDbQueue(); }, 120_000);
+setInterval(() => { if (ready) drainDbQueue(); }, 120_000).unref();
 
 /* ─────────────────────────────────────────────────────────────────────
    sendWhatsApp — send a plain-text message. Never throws.
@@ -294,7 +309,20 @@ async function sendWhatsAppDocument(phone, pdfBuffer, filename, caption) {
 
 /* ── status helper used by the admin health-check endpoint ──────────── */
 function getWhatsAppStatus() {
-  return { ready, initializing };
+  return { ready, initializing, awaitingScan: !!lastQr && !ready };
 }
 
-module.exports = { initWhatsApp, sendWhatsApp, sendWhatsAppDocument, getWhatsAppStatus, drainDbQueue };
+/* Pairing QR as a module matrix ({ size, rows: ['0101…', …] }) so the admin
+   page can draw exact square modules. null when linked / no QR yet. */
+function getWhatsAppQr() {
+  if (!lastQr || ready) return null;
+  const QRCode = require('qrcode-terminal/vendor/QRCode');
+  const ECL = require('qrcode-terminal/vendor/QRCode/QRErrorCorrectLevel');
+  const q = new QRCode(-1, ECL.L);
+  q.addData(lastQr);
+  q.make();
+  const rows = q.modules.map((r) => r.map((on) => (on ? '1' : '0')).join(''));
+  return { size: rows.length, rows };
+}
+
+module.exports = { initWhatsApp, sendWhatsApp, sendWhatsAppDocument, getWhatsAppStatus, getWhatsAppQr, drainDbQueue };

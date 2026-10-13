@@ -5,7 +5,10 @@
  *   1. X-Tenant-Slug header (dev / API testing convenience).
  *   2. Subdomain of the Host header: <slug>.sunshine.app or <slug>.localhost.
  *   3. DEFAULT_TENANT_SLUG env (dev fallback so plain http://localhost keeps
- *      working; defaults to 'sunshine-original' outside production).
+ *      working; defaults to 'sunshine-original' outside production, and is
+ *      used in production only when set explicitly).
+ *   BASE_DOMAIN (optional; on Render defaults to RENDER_EXTERNAL_HOSTNAME):
+ *   only <slug>.<BASE_DOMAIN> hosts carry a slug.
  *
  * On success attaches:
  *   req.tenant — { id, slug, name, status, settings } (settings from
@@ -24,9 +27,20 @@ const { adminPool, forTenant } = require('../config/db');
 const CACHE_TTL_MS = 30_000;
 const cache = new Map(); // slug -> { tenant, expires }
 
-function slugFromHost(hostname) {
+function slugFromHost(hostname, baseDomain = process.env.BASE_DOMAIN || process.env.RENDER_EXTERNAL_HOSTNAME) {
   if (!hostname) return null;
   const host = String(hostname).toLowerCase().split(':')[0];
+  // With BASE_DOMAIN set (e.g. sunshine.onrender.com or sunshine.app), only
+  // <slug>.<BASE_DOMAIN> carries a slug; the bare domain itself has none.
+  if (baseDomain) {
+    const base = String(baseDomain).toLowerCase();
+    if (host === base) return null;
+    if (host.endsWith(`.${base}`)) {
+      const sub = host.slice(0, -(base.length + 1));
+      return sub.includes('.') ? null : sub;
+    }
+    return null;
+  }
   const parts = host.split('.');
   // slug.localhost (dev) or slug.example.com (prod) — bare domains have no slug
   if (parts.length >= 2 && parts[parts.length - 1] === 'localhost') {
@@ -61,9 +75,11 @@ async function resolveTenant(req, res, next) {
   try {
     const headerSlug = (req.headers['x-tenant-slug'] || '').trim().toLowerCase();
     const hostSlug = slugFromHost(req.hostname || req.headers.host);
+    // Production only falls back when DEFAULT_TENANT_SLUG is set explicitly
+    // (single-resort deployments); dev falls back to the original resort.
     const devFallback =
       process.env.NODE_ENV === 'production'
-        ? null
+        ? (process.env.DEFAULT_TENANT_SLUG || null)
         : (process.env.DEFAULT_TENANT_SLUG || 'sunshine-original');
 
     const slug = headerSlug || hostSlug || devFallback;

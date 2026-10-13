@@ -14,6 +14,7 @@ import {
   adminAddGuest, adminUpdateGuest,
   blockUser, deleteUser, deleteBooking, deleteExpense,
   deleteEmployee, deleteTask, setEmployeeCredentials,
+  can, refreshPermissions, hasPermissionData, employeePinLogin, enrolDevice,
 } from "../api/client.js";
 
 export {
@@ -27,6 +28,7 @@ export {
   adminAddGuest, adminUpdateGuest,
   blockUser, deleteUser, deleteBooking, deleteExpense,
   deleteEmployee, deleteTask, setEmployeeCredentials,
+  can, refreshPermissions, hasPermissionData, employeePinLogin, enrolDevice,
 };
 
 // ── formatters ────────────────────────────────────────────────────

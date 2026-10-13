@@ -1,0 +1,85 @@
+# Render Blueprint — one web service (API + website) + one Postgres database.
+# Render dashboard → New → Blueprint → pick this repo. Values marked
+# `sync: false` are asked for on first deploy (secrets never live in git).
+services:
+  - type: web
+    name: sunshine-pms
+    runtime: node
+    region: singapore          # closest Render region to Puducherry
+    plan: starter              # needed: free instances sleep (WhatsApp drops) and can't have a disk
+    buildCommand: >-
+      npm ci --prefix backend &&
+      npm ci --include=dev --prefix client &&
+      npm run build --prefix client
+    preDeployCommand: npm run db:deploy --prefix backend   # creates/migrates the DB before each release
+    startCommand: npm start --prefix backend
+    healthCheckPath: /api/health
+    disk:
+      name: sunshine-data
+      mountPath: /var/data     # survives deploys: WhatsApp session + uploaded photos
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      - key: TRUST_PROXY
+        value: "1"
+      - key: UPLOADS_DIR
+        value: /var/data/uploads
+      - key: WHATSAPP_AUTH_DIR
+        value: /var/data/baileys_auth
+      - key: DEFAULT_TENANT_SLUG
+        value: sunshine-original
+      # BASE_DOMAIN is optional: Render provides RENDER_EXTERNAL_HOSTNAME automatically.
+      # Database: internal connection, no TLS needed inside Render.
+      - key: DB_HOST
+        fromDatabase: { name: sunshine-db, property: host }
+      - key: DB_PORT
+        fromDatabase: { name: sunshine-db, property: port }
+      - key: DB_NAME
+        fromDatabase: { name: sunshine-db, property: database }
+      - key: DB_USER
+        fromDatabase: { name: sunshine-db, property: user }
+      - key: DB_PASSWORD
+        fromDatabase: { name: sunshine-db, property: password }
+      - key: DB_APP_USER
+        fromDatabase: { name: sunshine-db, property: user }
+      - key: DB_APP_PASSWORD
+        fromDatabase: { name: sunshine-db, property: password }
+      - key: DB_POOL_MAX
+        value: "10"
+      - key: DB_ADMIN_POOL_MAX
+        value: "3"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: PLATFORM_ADMIN_USERNAME
+        value: admin
+      - key: PLATFORM_ADMIN_PASSWORD
+        sync: false
+      - key: OWNER_EMAIL
+        sync: false
+      - key: OWNER_PHONE
+        sync: false
+      - key: GMAIL_USER
+        sync: false
+      - key: GMAIL_PASS
+        sync: false
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: EARLY_LATE_FEE_PER_HOUR
+        value: "150"
+      - key: REFUND_APPROVAL_THRESHOLD
+        value: "2000"
+      - key: SEED_SAMPLE_DATA
+        value: "false"           # no fake bookings/guests in production
+      - key: TENANCY_SKIP_UPLOADS
+        value: "true"
+
+databases:
+  - name: sunshine-db
+    databaseName: sunshine
+    region: singapore
+    plan: basic-256mb

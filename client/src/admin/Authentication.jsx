@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Bell, Mail, FileText, MessageCircle, CheckCircle, XCircle, AlertTriangle, RefreshCw, Trash2, Search, Wifi, WifiOff, Clock } from "lucide-react";
-import { useApi, apiFetch, fmtDate, fmtTime, getUser, notify } from "./adminContext.js";
+import { useApi, apiFetch, fmtDate, fmtTime, getUser, notify, can } from "./adminContext.js";
 import { Spinner, ApiError, SectionHeader, Card, TableWrap, EmptyState } from "./ui.jsx";
 
 const TYPE_ICON  = { email: Mail, invoice: FileText, whatsapp: MessageCircle };
@@ -18,6 +18,7 @@ export default function Authentication({ isStaff = false }) {
   const [emailSearch, setEmailSearch] = useState("");
   const [waStatus, setWaStatus] = useState(null);
   const [retrying, setRetrying] = useState(false);
+  const [waQr, setWaQr] = useState(null);
   const isOwner = !isStaff && getUser()?.role === "owner";
 
   // Poll WhatsApp status every 15 seconds
@@ -27,9 +28,15 @@ export default function Authentication({ isStaff = false }) {
       apiFetch("/api/admin/whatsapp/status")
         .then(s => { if (mounted) setWaStatus(s); })
         .catch(() => {});
-    fetchStatus();
+    // While unlinked, poll the QR quickly (it rotates every ~20s) so it can be scanned here.
+    const fetchQr = () => {
+      if (!can("whatsapp.manage")) return;
+      apiFetch("/api/admin/whatsapp/qr").then(r => { if (mounted) setWaQr(r.qr || null); }).catch(() => {});
+    };
+    fetchStatus(); fetchQr();
     const id = setInterval(fetchStatus, 15_000);
-    return () => { mounted = false; clearInterval(id); };
+    const qid = setInterval(fetchQr, 5_000);
+    return () => { mounted = false; clearInterval(id); clearInterval(qid); };
   }, []);
 
   const handleRetry = async () => {
@@ -162,6 +169,20 @@ export default function Authentication({ isStaff = false }) {
                   </button>
                 )}
               </div>
+              {waQr && (
+                <div style={{ margin: "10px 0" }}>
+                  <div style={{ fontSize: 12, marginBottom: 6 }}>WhatsApp → Settings → Linked devices → Link a device, then scan:</div>
+                  <svg
+                    viewBox={`-4 -4 ${waQr.size + 8} ${waQr.size + 8}`}
+                    width={260} height={260}
+                    shapeRendering="crispEdges"
+                    style={{ background: "#fff", borderRadius: 6, display: "block" }}
+                    role="img" aria-label="WhatsApp pairing QR code"
+                  >
+                    {waQr.rows.flatMap((row, y) => [...row].map((c, x) => c === "1" ? <rect key={`${x}-${y}`} x={x} y={y} width="1" height="1" fill="#000" /> : null))}
+                  </svg>
+                </div>
+              )}
               <div style={{ fontSize: 12, color: "var(--ff-muted)", fontFamily: "monospace", marginTop: 2 }}>Auto (QR scan on first boot)</div>
               <div style={{ fontSize: 12, color: "var(--ff-muted)", marginTop: 4, fontStyle: "italic" }}>
                 {waStatus && !waStatus.ready && !waStatus.initializing

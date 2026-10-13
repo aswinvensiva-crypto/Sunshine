@@ -11,6 +11,7 @@
 require('dotenv').config();
 const { Pool } = require('pg');
 const { migrateTenancy } = require('./migrate-tenancy');
+const rbac = require('./migrate-rbac');
 
 const pool = new Pool({
   host:     process.env.DB_HOST     || 'localhost',
@@ -18,6 +19,7 @@ const pool = new Pool({
   user:     process.env.DB_USER     || 'postgres',
   password: process.env.DB_PASSWORD || 'postgres',
   database: process.env.DB_NAME     || 'sunshine',
+  ssl:      process.env.DB_SSL === 'true' ? { rejectUnauthorized: true } : undefined,
 });
 
 async function run() {
@@ -147,6 +149,16 @@ async function run() {
     if (!ok) process.exitCode = 1;
   } catch (err) {
     console.error('[tenancy] FAILED:', err.message);
+    process.exitCode = 1;
+  }
+
+  try {
+    console.log('\n[rbac] Applying roles / permissions / approvals…');
+    const r = await rbac.up(pool);
+    console.log(`[rbac] Done.${r.ok ? '' : ` (WITH ERRORS: ${r.orphanUsers} users without a membership)`}`);
+    if (!r.ok) process.exitCode = 1;
+  } catch (err) {
+    console.error('[rbac] FAILED:', err.message);
     process.exitCode = 1;
   }
 

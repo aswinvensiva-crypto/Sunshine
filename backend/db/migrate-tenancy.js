@@ -178,29 +178,41 @@ async function migrateTenancy(pool) {
     /* ── 6. Non-superuser app role (RLS is bypassed by superusers) ───── */
     const appUser = process.env.DB_APP_USER || 'sunshine_app';
     const appPassword = process.env.DB_APP_PASSWORD || 'sunshine_app';
+    // When the app shares the admin login (e.g. a managed Postgres with a single
+    // non-superuser account), the REVOKEs below would strip the admin's own
+    // access to platform_admins/tenants. Skip the separate-role setup entirely.
+    const sameAsAdmin = appUser === (process.env.DB_USER || 'postgres');
+    if (sameAsAdmin) {
+      console.warn(`  [tenancy] DB_APP_USER equals DB_USER ('${appUser}') — skipping app-role grants; RLS is not a separate boundary in this setup.`);
+    }
     const role = await client.query(`SELECT 1 FROM pg_roles WHERE rolname = $1`, [appUser]);
-    if (!role.rows[0]) {
+    if (!sameAsAdmin && !role.rows[0]) {
       // Identifier/literal built from env — quote defensively.
       await client.query(
         `CREATE ROLE ${quoteIdent(appUser)} LOGIN PASSWORD ${quoteLiteral(appPassword)} NOSUPERUSER NOCREATEDB NOCREATEROLE`
       );
     }
-    await client.query(`GRANT USAGE ON SCHEMA public TO ${quoteIdent(appUser)}`);
-    await client.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${quoteIdent(appUser)}`);
-    await client.query(`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ${quoteIdent(appUser)}`);
-    await client.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${quoteIdent(appUser)}`);
-    await client.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO ${quoteIdent(appUser)}`);
-    // The app role must never read platform admin credentials or write tenants.
-    await client.query(`REVOKE ALL ON platform_admins FROM ${quoteIdent(appUser)}`);
-    await client.query(`REVOKE INSERT, UPDATE, DELETE ON tenants, tenant_settings FROM ${quoteIdent(appUser)}`);
-    await client.query(`GRANT SELECT ON tenants, tenant_settings TO ${quoteIdent(appUser)}`);
+    if (!sameAsAdmin) {
+      await client.query(`GRANT USAGE ON SCHEMA public TO ${quoteIdent(appUser)}`);
+      await client.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${quoteIdent(appUser)}`);
+      await client.query(`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ${quoteIdent(appUser)}`);
+      await client.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${quoteIdent(appUser)}`);
+      await client.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO ${quoteIdent(appUser)}`);
+      // The app role must never read platform admin credentials or write tenants.
+      await client.query(`REVOKE ALL ON platform_admins FROM ${quoteIdent(appUser)}`);
+      await client.query(`REVOKE INSERT, UPDATE, DELETE ON tenants, tenant_settings FROM ${quoteIdent(appUser)}`);
+      await client.query(`GRANT SELECT ON tenants, tenant_settings TO ${quoteIdent(appUser)}`);
+    }
 
     /* ── 7. Seed platform super-admin ────────────────────────────────── */
     const bcrypt = require('bcryptjs');
     const paUser = process.env.PLATFORM_ADMIN_USERNAME || 'superadmin';
-    const paPass = process.env.PLATFORM_ADMIN_PASSWORD || 'superadmin123';
+    const isProd = process.env.NODE_ENV === 'production';
+    const paPass = process.env.PLATFORM_ADMIN_PASSWORD || (isProd ? null : 'superadmin123');
     const existing = await client.query(`SELECT 1 FROM platform_admins WHERE username = $1`, [paUser]);
-    if (!existing.rows[0]) {
+    if (!existing.rows[0] && !paPass) {
+      console.warn('  [tenancy] PLATFORM_ADMIN_PASSWORD not set in production — platform admin NOT seeded');
+    } else if (!existing.rows[0]) {
       await client.query(
         `INSERT INTO platform_admins (username, full_name, password_hash) VALUES ($1, 'Platform Admin', $2)`,
         [paUser, await bcrypt.hash(paPass, 10)]

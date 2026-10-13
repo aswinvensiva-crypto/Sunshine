@@ -226,7 +226,8 @@ function BeachSunset() {
 }
 
 /* ─── Shared login page ──────────────────────────────────────────── */
-export default function LoginPage({ subtitle, hint, onLogin, isStaff }) {
+export default function LoginPage({ subtitle, hint, onLogin, isStaff, allowPin, onEnrol }) {
+  const [mode, setMode] = useState('password'); // 'password' | 'pin' | 'enrol'
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPass, setShowPass] = useState(false);
@@ -235,11 +236,17 @@ export default function LoginPage({ subtitle, hint, onLogin, isStaff }) {
 
   const submit = async (e) => {
     e.preventDefault();
-    if (!username.trim()) { setErr('Username is required.'); return; }
-    if (!password)        { setErr('Password is required.');  return; }
+    if (mode !== 'enrol' && !username.trim()) { setErr('Username is required.'); return; }
+    if (!password) { setErr(mode === 'pin' ? 'PIN is required.' : mode === 'enrol' ? 'Device code is required.' : 'Password is required.'); return; }
     setErr(''); setBusy(true);
     try {
-      await onLogin(username.trim(), password);
+      if (mode === 'enrol') {
+        await onEnrol(password.trim());
+        setPassword(''); setMode('pin');
+        setErr('Phone registered. Now sign in with your PIN.');
+        return;
+      }
+      await onLogin(username.trim(), password, mode);
     } catch (e2) {
       // Multi-tenant error states are surfaced distinctly from a wrong password.
       const byCode = {
@@ -381,13 +388,14 @@ export default function LoginPage({ subtitle, hint, onLogin, isStaff }) {
                 display:'block', marginBottom:8,
                 fontSize:11, fontWeight:700, letterSpacing:'.12em',
                 color:'#4a6080', textTransform:'uppercase',
-              }}>Password</label>
+              }}>{mode === 'pin' ? 'PIN' : mode === 'enrol' ? 'Device code (from your manager)' : 'Password'}</label>
               <div style={inputBox(!!password)}>
                 <div style={{ padding:'0 14px', color: password ? '#06b6d4' : '#2a4060', display:'flex', alignItems:'center', flexShrink:0, transition:'color .18s' }}>
                   <Lock size={16}/>
                 </div>
                 <input
                   type={showPass ? 'text' : 'password'}
+                  inputMode={mode === 'password' ? undefined : 'numeric'}
                   value={password}
                   onChange={e => { setPassword(e.target.value); setErr(''); }}
                   placeholder="••••••••"
@@ -415,6 +423,14 @@ export default function LoginPage({ subtitle, hint, onLogin, isStaff }) {
                 </button>
               </div>
             </div>
+
+            {allowPin && (
+              <div style={{ display:'flex', gap:14, fontSize:12.5, justifyContent:'center' }}>
+                {mode !== 'password' && <button type="button" style={{ background:'none', border:'none', color:'#06b6d4', cursor:'pointer' }} onClick={() => { setMode('password'); setPassword(''); setErr(''); }}>Use password</button>}
+                {mode !== 'pin' && <button type="button" style={{ background:'none', border:'none', color:'#06b6d4', cursor:'pointer' }} onClick={() => { setMode('pin'); setPassword(''); setErr(''); }}>Sign in with PIN</button>}
+                {mode !== 'enrol' && <button type="button" style={{ background:'none', border:'none', color:'#06b6d4', cursor:'pointer' }} onClick={() => { setMode('enrol'); setPassword(''); setErr(''); }}>Register this phone</button>}
+              </div>
+            )}
 
             {/* Error */}
             {err && (
@@ -470,7 +486,7 @@ export default function LoginPage({ subtitle, hint, onLogin, isStaff }) {
                 <span style={{ fontSize:12.5, color:'#5a7290', whiteSpace:'nowrap' }}>
                   Default:&nbsp;
                   <span style={{ color:'#06b6d4', fontWeight:700 }}>
-                    {isStaff ? 'staff credentials' : 'admin / admin123'}
+                    {isStaff ? 'staff credentials' : 'the login your owner gave you'}
                   </span>
                 </span>
                 <div style={{ flex:1, height:'1px', background:'#0d1e32' }}/>

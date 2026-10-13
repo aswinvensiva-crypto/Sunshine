@@ -51,12 +51,15 @@ app.set('io', io);
 app.set('emitToTenant', (tenantId, event, payload) =>
   io.to(`tenant:${tenantId}`).emit(event, payload));
 
+// Behind IIS / a reverse proxy the client IP arrives in X-Forwarded-For (needed for login rate limits).
+if (process.env.TRUST_PROXY) app.set('trust proxy', Number(process.env.TRUST_PROXY) || 1);
+
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
 /* ── Uploads: files live under uploads/<tenant_id>/... and are only served to
    requests whose resolved tenant matches the path prefix. ── */
-const uploadsRoot = path.join(__dirname, '..', 'uploads');
+const { UPLOADS_DIR: uploadsRoot, CLIENT_DIST } = require('./config/paths');
 app.use('/uploads', resolveTenant, (req, res, next) => {
   const m = req.path.match(/^\/(\d+)(\/|$)/);
   if (!m || Number(m[1]) !== Number(req.tenant.id)) {
@@ -88,8 +91,19 @@ const calendarRouter = require('./routes/calendar');
 app.use('/api/admin/calendar', resolveTenant, requireAuth, calendarRouter);
 calendarRouter.initCalendarSocket(io);
 
+app.use('/api/admin/iam', resolveTenant, requireAuth, require('./modules/identity/http/iamRoutes'));
 app.use('/api/admin',    resolveTenant, requireAuth, require('./routes/admin'));
 app.use('/api/payments', resolveTenant, require('./routes/payments'));
+
+/* ── Website: in production one service serves both the API and the built
+   React app (client/dist) from the same origin, so /api calls, uploads and
+   Socket.IO need no CORS or proxy. Unknown /api paths still 404 as JSON. ── */
+if (fs.existsSync(path.join(CLIENT_DIST, 'index.html'))) {
+  app.use(express.static(CLIENT_DIST, { index: false, maxAge: '1h' }));
+  app.get(/^\/(?!api\/|api$|uploads\/|socket\.io\/).*/, (req, res) =>
+    res.sendFile(path.join(CLIENT_DIST, 'index.html')));
+}
+app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
 const cron = require('node-cron');
 const { sendCheckInSMS } = require('./services/notify');

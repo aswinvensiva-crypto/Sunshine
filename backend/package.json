@@ -7,7 +7,12 @@
   "scripts": {
     "start": "node server/server.js",
     "dev": "nodemon server/server.js",
-    "db:setup": "node db/setup.js"
+    "db:setup": "node db/setup.js",
+    "db:migrate": "node db/migrate.js",
+    "db:deploy": "node db/deploy.js",
+    "bootstrap-owner": "node scripts/bootstrap-owner.js",
+    "dev:admin-logins": "node scripts/set-dev-passwords.js",
+    "test": "node --test --test-force-exit \"test/**/*.test.js\""
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^7.0.0-rc13",
@@ -15,6 +20,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "express-rate-limit": "^8.7.1",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.2.0",
     "node-cron": "^4.4.1",
@@ -28,6 +34,7 @@
     "twilio": "^6.0.2"
   },
   "devDependencies": {
-    "nodemon": "^3.1.4"
+    "nodemon": "^3.1.4",
+    "supertest": "^7.3.1"
   }
 }

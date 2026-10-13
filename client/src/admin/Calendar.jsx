@@ -29,8 +29,10 @@ const TOOLBAR = 44;
 const LEGEND  = 28;
 
 /* ─── API ───────────────────────────────────────────────────── */
-const API   = 'http://localhost:5001/api';
-const SOCK  = 'http://localhost:5001';
+const API   = '/api';
+// Vite's dev proxy doesn't carry Socket.IO, so dev talks to the API port directly;
+// in production the API serves the site, so the socket is same-origin.
+const SOCK  = import.meta.env.DEV ? 'http://localhost:5001' : window.location.origin;
 const TOKEN = () => localStorage.getItem('ma_token') || localStorage.getItem('adminToken') || '';
 
 /* ─── OTA badge — derive color from source string hash ─────── */

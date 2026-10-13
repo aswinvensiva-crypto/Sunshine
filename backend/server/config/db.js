@@ -29,6 +29,8 @@ const base = {
   database: process.env.DB_NAME || 'sunshine',
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
+  // Hosted Postgres (Neon / Supabase / Vercel Postgres) requires TLS.
+  ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: true } : undefined,
 };
 
 // Application pool — RLS-enforced role created by db/migrate.js.

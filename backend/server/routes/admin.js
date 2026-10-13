@@ -1,14 +1,21 @@
 ﻿const router = require('express').Router();
 const bcrypt = require('bcryptjs');
 const path = require('path');
-const { requireAdmin, requireOwner } = require('../middleware/auth');
+const { UPLOADS_DIR } = require('../config/paths');
+const { requirePermission, can } = require('../modules/identity/http/requirePermission');
+const { requiresApproval } = require('../modules/identity/domain/approvals');
+const { createApproval, approvalPolicy } = require('../modules/identity/application/approvals');
+const { recordBookingRefund } = require('../services/refunds');
+const { employeeRoleCode, ROLE_DEFS } = require('../modules/identity/domain/permissions');
+const { canAssignRole } = require('../modules/identity/domain/delegation');
+const { setUserRole, legacyRoleName } = require('../modules/identity/infra/rbacRepo');
 const { sendBookingNotifications, sendInvoiceEmail, sendAdvanceReceiptEmail, sendBalancePaymentAlert, sendCancellationAlert, sendOverbookingAlert, sendSpecialRequestUpdate, sendCheckoutReceipt, sendFeedbackEmail, sendCheckInSMS, sendCheckoutReminder } = require('../services/notify');
 const { sendWhatsApp } = require('../services/whatsapp');
 const multer = require('multer');
 
 const photoStorage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const dir = path.join(__dirname, '..', '..', 'uploads', String(req.tenant.id), 'routines');
+    const dir = path.join(UPLOADS_DIR, String(req.tenant.id), 'routines');
     require('fs').mkdirSync(dir, { recursive: true });
     cb(null, dir);
   },
@@ -22,7 +29,7 @@ const uploadPhoto = multer({ storage: photoStorage, limits: { fileSize: 10 * 102
 
 /* ---------------- DASHBOARD ---------------- */
 // GET /api/admin/dashboard
-router.get('/dashboard', async (req, res) => {
+router.get('/dashboard', requirePermission('dashboard.view'), async (req, res) => {
   try {
     const totalRoomsQ = await req.db.query('SELECT COALESCE(SUM(total_rooms),0)::int AS n FROM room_types');
     const totalRooms = totalRoomsQ.rows[0].n || 1;
@@ -131,7 +138,7 @@ router.get('/dashboard', async (req, res) => {
 
 /* ---------------- BOOKINGS ---------------- */
 // GET /api/admin/bookings?status=&from=&to=
-router.get('/bookings', async (req, res) => {
+router.get('/bookings', requirePermission('reservation.view'), async (req, res) => {
   // Auto-checkout any checked_in bookings whose check_out date has passed
   await req.db.query(`
     UPDATE bookings SET status = 'checked_out'
@@ -169,10 +176,13 @@ router.get('/bookings', async (req, res) => {
 
 // PATCH /api/admin/bookings/:id/status  { status }
 // Cancelling releases the held inventory.
-router.patch('/bookings/:id/status', async (req, res) => {
+router.patch('/bookings/:id/status', requirePermission('reservation.modify'), async (req, res) => {
   const { status } = req.body || {};
   const allowed = ['confirmed', 'checked_in', 'checked_out', 'cancelled'];
   if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status' });
+  if (status === 'cancelled' && !can(req, 'reservation.cancel')) {
+    return res.status(403).json({ error: 'You do not have permission to do that', code: 'FORBIDDEN', required: ['reservation.cancel'] });
+  }
 
   const client = await req.db.connect();
   try {
@@ -361,7 +371,7 @@ router.patch('/bookings/:id/status', async (req, res) => {
 
 /* ---------------- ROOM TASKS (for Dashboard overlays) ---------------- */
 // GET /api/admin/rooms/tasks  → pending/in-progress tasks grouped by room_id
-router.get('/rooms/tasks', async (req, res) => {
+router.get('/rooms/tasks', requirePermission('task.view'), async (req, res) => {
   try {
     const { rows } = await req.db.query(
       `SELECT t.room_id, t.task_id, t.title, t.status, t.priority,
@@ -385,8 +395,10 @@ router.get('/rooms/tasks', async (req, res) => {
 
 /* ---------------- EMPLOYEE ROUTINES — My Tasks (staff) ---------------- */
 // GET /api/admin/my-tasks?employee_id=  → routines assigned to employee
-router.get('/my-tasks', async (req, res) => {
-  const empId = req.query.employee_id || req.user?.employee_id;
+router.get('/my-tasks', requirePermission('task.own'), async (req, res) => {
+  // Employee principals are pinned to their own id; only users with task.manage may look at others.
+  const isEmp = req.user?.type === 'employee';
+  const empId = isEmp ? req.user.employee_id : (can(req, 'task.manage') ? req.query.employee_id : null);
   if (!empId) return res.status(400).json({ error: 'employee_id required' });
   try {
     const { rows } = await req.db.query(
@@ -409,15 +421,17 @@ router.get('/my-tasks', async (req, res) => {
 });
 
 // PATCH /api/admin/my-tasks/:id/complete  { photo_url? }
-router.patch('/my-tasks/:id/complete', async (req, res) => {
+router.patch('/my-tasks/:id/complete', requirePermission('task.own'), async (req, res) => {
   const { photo_url } = req.body || {};
   try {
     const { rows } = await req.db.query(
       `UPDATE employee_routines
           SET status = 'Verified', completed_at = now(), photo_verification_url = COALESCE($1, photo_verification_url)
         WHERE routine_id = $2 AND tenant_id = $3
+          AND ($4::int IS NULL OR employee_id = $4)
         RETURNING routine_id, status, room_id`,
-      [photo_url || null, req.params.id, req.tenant.id]
+      [photo_url || null, req.params.id, req.tenant.id,
+       req.user?.type === 'employee' ? req.user.employee_id : null]
     );
     if (!rows[0]) return res.status(404).json({ error: 'Task not found' });
     // Mark room back to available when housekeeping completes
@@ -437,7 +451,7 @@ router.patch('/my-tasks/:id/complete', async (req, res) => {
 
 /* ---------------- DISPUTE PACKAGE PDF ---------------- */
 // GET /api/admin/bookings/:id/dispute-package  → PDF download
-router.get('/bookings/:id/dispute-package', requireOwner, async (req, res) => {
+router.get('/bookings/:id/dispute-package', requirePermission('dispute.view'), async (req, res) => {
   try {
     const bkQ = await req.db.query(
       `SELECT b.*, g.full_name, g.phone, g.email, g.kyc_type, g.kyc_number,
@@ -530,7 +544,7 @@ router.get('/bookings/:id/dispute-package', requireOwner, async (req, res) => {
 
 /* ---------------- CALENDAR ---------------- */
 // GET /api/admin/calendar?month=YYYY-MM   → occupancy per day
-router.get('/calendar', async (req, res) => {
+router.get('/calendar', requirePermission('reservation.view'), async (req, res) => {
   const month = req.query.month || new Date().toISOString().slice(0, 7);
   const first = month + '-01';
   try {
@@ -552,7 +566,7 @@ router.get('/calendar', async (req, res) => {
 
 /* ---------------- ROOMS ---------------- */
 // GET /api/admin/rooms  â†' room types (with today's metrics) + physical rooms
-router.get('/rooms', async (req, res) => {
+router.get('/rooms', requirePermission('room.view'), async (req, res) => {
   try {
     const types = await req.db.query(
       `SELECT rt.id, rt.code, rt.name, rt.description, rt.base_rate, rt.total_rooms,
@@ -613,7 +627,7 @@ router.get('/rooms', async (req, res) => {
 // GET /api/admin/rooms/available?room_type_id=&check_in=&check_out=
 // Physical rooms of a type that are NOT already booked (non-cancelled) on any
 // night overlapping [check_in, check_out), and not in maintenance/unavailable.
-router.get('/rooms/available', async (req, res) => {
+router.get('/rooms/available', requirePermission('room.view'), async (req, res) => {
   const { room_type_id, check_in, check_out } = req.query;
   if (!room_type_id || !check_in || !check_out)
     return res.status(400).json({ error: 'room_type_id, check_in and check_out are required' });
@@ -640,7 +654,7 @@ router.get('/rooms/available', async (req, res) => {
 });
 
 // POST /api/admin/rooms/rate/pattern  { room_type_id, from, to, slots:[{days:[0..6], rate}] }
-router.post('/rooms/rate/pattern', async (req, res) => {
+router.post('/rooms/rate/pattern', requirePermission('rate.edit'), async (req, res) => {
   const { room_type_id, from, to, slots } = req.body || {};
   if (!room_type_id || !from || !to || !Array.isArray(slots) || !slots.length)
     return res.status(400).json({ error: 'room_type_id, from, to and slots are required' });
@@ -666,7 +680,7 @@ router.post('/rooms/rate/pattern', async (req, res) => {
 });
 
 // PATCH /api/admin/rooms/rate  { room_type_id, from, to, rate }
-router.patch('/rooms/rate', async (req, res) => {
+router.patch('/rooms/rate', requirePermission('rate.edit'), async (req, res) => {
   const { room_type_id, from, to, rate } = req.body || {};
   if (!room_type_id || !from || !to || rate == null) return res.status(400).json({ error: 'room_type_id, from, to and rate are required' });
   try {
@@ -682,7 +696,7 @@ router.patch('/rooms/rate', async (req, res) => {
 });
 
 // PATCH /api/admin/rooms/:id/status  { status, maintenance_until? }
-router.patch('/rooms/:id/status', async (req, res) => {
+router.patch('/rooms/:id/status', requirePermission('room.status'), async (req, res) => {
   let { status, maintenance_until } = req.body || {};
   // Accept UI display values and map to DB values
   if (status === 'vacant_clean') status = 'available';
@@ -703,7 +717,7 @@ router.patch('/rooms/:id/status', async (req, res) => {
 
 /* ---------------- ROOM TYPES CRUD (owner only) ---------------- */
 // POST /api/admin/room-types  { code, name, description, max_occupancy, base_rate, amenities }
-router.post('/room-types', requireOwner, async (req, res) => {
+router.post('/room-types', requirePermission('room.manage'), async (req, res) => {
   const { code, name, description, max_occupancy, base_rate, amenities } = req.body || {};
   if (!code || !name || !max_occupancy || base_rate == null)
     return res.status(400).json({ error: 'code, name, max_occupancy and base_rate are required' });
@@ -721,7 +735,7 @@ router.post('/room-types', requireOwner, async (req, res) => {
 });
 
 // PUT /api/admin/room-types/:id  { name, description, max_occupancy, base_rate, amenities }
-router.put('/room-types/:id', requireOwner, async (req, res) => {
+router.put('/room-types/:id', requirePermission('room.manage'), async (req, res) => {
   const { name, description, max_occupancy, base_rate, amenities } = req.body || {};
   try {
     const { rows } = await req.db.query(
@@ -737,7 +751,7 @@ router.put('/room-types/:id', requireOwner, async (req, res) => {
 });
 
 // DELETE /api/admin/room-types/:id  (owner only, only if no rooms attached)
-router.delete('/room-types/:id', requireOwner, async (req, res) => {
+router.delete('/room-types/:id', requirePermission('room.manage'), async (req, res) => {
   try {
     const check = await req.db.query('SELECT COUNT(*)::int AS n FROM rooms WHERE room_type_id=$1 AND tenant_id=$2', [req.params.id, req.tenant.id]);
     if (check.rows[0].n > 0)
@@ -752,7 +766,7 @@ router.delete('/room-types/:id', requireOwner, async (req, res) => {
 
 /* ---------------- PHYSICAL ROOMS CRUD (owner only) ---------------- */
 // POST /api/admin/rooms-physical  { room_type_id, room_number, floor }
-router.post('/rooms-physical', requireOwner, async (req, res) => {
+router.post('/rooms-physical', requirePermission('room.manage'), async (req, res) => {
   const { room_type_id, room_number, floor } = req.body || {};
   if (!room_type_id || !room_number)
     return res.status(400).json({ error: 'room_type_id and room_number are required' });
@@ -778,7 +792,7 @@ router.post('/rooms-physical', requireOwner, async (req, res) => {
 });
 
 // DELETE /api/admin/rooms-physical/:id  (owner only)
-router.delete('/rooms-physical/:id', requireOwner, async (req, res) => {
+router.delete('/rooms-physical/:id', requirePermission('room.manage'), async (req, res) => {
   const client = await req.db.connect();
   try {
     await client.query('BEGIN');
@@ -807,7 +821,7 @@ router.delete('/rooms-physical/:id', requireOwner, async (req, res) => {
 
 /* ---------------- GUESTS / CUSTOMERS ---------------- */
 // GET /api/admin/guests
-router.get('/guests', async (req, res) => {
+router.get('/guests', requirePermission('guest.view'), async (req, res) => {
   try {
     const { rows } = await req.db.query(
       `SELECT g.id, g.full_name, g.email, g.phone, g.address,
@@ -827,7 +841,7 @@ router.get('/guests', async (req, res) => {
 });
 
 // GET /api/admin/guests/by-kyc?kyc_number=XXX — find a guest by KYC number
-router.get('/guests/by-kyc', async (req, res) => {
+router.get('/guests/by-kyc', requirePermission('guest.view'), async (req, res) => {
   const { kyc_number } = req.query;
   if (!kyc_number) return res.status(400).json({ error: 'kyc_number is required' });
   try {
@@ -854,7 +868,7 @@ router.get('/guests/by-kyc', async (req, res) => {
 
 /* ---------------- EXPENSES ---------------- */
 // GET /api/admin/expenses
-router.get('/expenses', async (req, res) => {
+router.get('/expenses', requirePermission('expense.view'), async (req, res) => {
   try {
     const { rows } = await req.db.query('SELECT * FROM expenses ORDER BY spent_on DESC, id DESC LIMIT 200');
     res.json(rows);
@@ -864,7 +878,7 @@ router.get('/expenses', async (req, res) => {
 });
 
 // DELETE /api/admin/expenses  (owner only) — delete ALL expenses
-router.delete('/expenses', requireOwner, async (req, res) => {
+router.delete('/expenses', requirePermission('expense.delete'), async (req, res) => {
   try {
     await req.db.query('DELETE FROM expenses WHERE tenant_id=$1', [req.tenant.id]);
     res.json({ ok: true });
@@ -872,7 +886,7 @@ router.delete('/expenses', requireOwner, async (req, res) => {
 });
 
 // DELETE /api/admin/expenses/:id  (owner only)
-router.delete('/expenses/:id', requireOwner, async (req, res) => {
+router.delete('/expenses/:id', requirePermission('expense.delete'), async (req, res) => {
   try {
     const { rowCount } = await req.db.query('DELETE FROM expenses WHERE id=$1 AND tenant_id=$2', [req.params.id, req.tenant.id]);
     if (!rowCount) return res.status(404).json({ error: 'Expense not found' });
@@ -881,7 +895,7 @@ router.delete('/expenses/:id', requireOwner, async (req, res) => {
 });
 
 // POST /api/admin/expenses  { category, description, amount, spent_on }
-router.post('/expenses', async (req, res) => {
+router.post('/expenses', requirePermission('expense.post'), async (req, res) => {
   const { category, description, amount, spent_on } = req.body || {};
   if (!category || amount == null) return res.status(400).json({ error: 'category and amount are required' });
   try {
@@ -898,10 +912,15 @@ router.post('/expenses', async (req, res) => {
 
 /* ---------------- STAFF USERS (admin only) ---------------- */
 // GET /api/admin/users
-router.get('/users', requireAdmin, async (req, res) => {
+router.get('/users', requirePermission('user.manage'), async (req, res) => {
   try {
     const { rows } = await req.db.query(
-      'SELECT id, username, full_name, role, is_blocked, created_at FROM users ORDER BY id'
+      `SELECT u.id, u.username, u.full_name, u.role, u.phone, u.is_blocked, u.created_at, u.last_login_at,
+              r.code AS role_code, r.name AS role_name
+         FROM users u
+         LEFT JOIN user_property_memberships m ON m.user_id = u.id AND m.tenant_id = u.tenant_id
+         LEFT JOIN roles r ON r.id = m.role_id
+        ORDER BY u.id`
     );
     res.json(rows);
   } catch (err) {
@@ -910,12 +929,12 @@ router.get('/users', requireAdmin, async (req, res) => {
 });
 
 // PATCH /api/admin/users/:id/block  { is_blocked }  (owner only)
-router.patch('/users/:id/block', requireOwner, async (req, res) => {
+router.patch('/users/:id/block', requirePermission('user.admin'), async (req, res) => {
   const { is_blocked } = req.body || {};
   if (Number(req.params.id) === req.user.id) return res.status(400).json({ error: 'Cannot block yourself' });
   try {
     const { rows } = await req.db.query(
-      'UPDATE users SET is_blocked=$1 WHERE id=$2 AND tenant_id=$3 RETURNING id, username, is_blocked',
+      'UPDATE users SET is_blocked=$1, token_version = token_version + 1 WHERE id=$2 AND tenant_id=$3 RETURNING id, username, is_blocked',
       [!!is_blocked, req.params.id, req.tenant.id]
     );
     if (!rows[0]) return res.status(404).json({ error: 'User not found' });
@@ -924,7 +943,7 @@ router.patch('/users/:id/block', requireOwner, async (req, res) => {
 });
 
 // DELETE /api/admin/users/:id  (owner only)
-router.delete('/users/:id', requireOwner, async (req, res) => {
+router.delete('/users/:id', requirePermission('user.admin'), async (req, res) => {
   if (Number(req.params.id) === req.user.id) return res.status(400).json({ error: 'Cannot delete yourself' });
   try {
     const { rowCount } = await req.db.query('DELETE FROM users WHERE id=$1 AND tenant_id=$2', [req.params.id, req.tenant.id]);
@@ -933,20 +952,43 @@ router.delete('/users/:id', requireOwner, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST /api/admin/users  { username, full_name, password, role }
-router.post('/users', requireAdmin, async (req, res) => {
-  const { username, full_name, password, role } = req.body || {};
+// POST /api/admin/users  { username, full_name, password, role_code, phone? }
+// A caller can only grant a role whose permissions are a subset of their own.
+router.post('/users', requirePermission('user.manage'), async (req, res) => {
+  const { username, full_name, password, phone } = req.body || {};
+  const roleCode = req.body?.role_code
+    || ({ owner: 'OWNER', manager: 'MANAGER', staff: 'FRONT_DESK' })[String(req.body?.role || '').toLowerCase()]
+    || 'FRONT_DESK';
   if (!username || !password) return res.status(400).json({ error: 'username and password are required' });
+  if (String(password).length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
   try {
-    const hash = await bcrypt.hash(password, 10);
-    const { rows } = await req.db.query(
-      `INSERT INTO users (username, full_name, password_hash, role)
-       VALUES ($1, $2, $3, $4) RETURNING id, username, full_name, role`,
-      [username, full_name || null, hash, role || 'staff']
+    const rp = await req.db.query(
+      `SELECT rp.permission_code FROM roles r
+         LEFT JOIN role_permissions rp ON rp.role_id = r.id AND rp.tenant_id = r.tenant_id
+        WHERE r.tenant_id = $1 AND r.code = $2`,
+      [req.tenant.id, roleCode]
     );
-    res.status(201).json(rows[0]);
+    if (!rp.rows.length) return res.status(400).json({ error: 'Unknown role', code: 'ROLE_NOT_FOUND' });
+    const guard = canAssignRole(req.user.permissions, rp.rows.map((r) => r.permission_code).filter(Boolean));
+    if (!guard.ok) return res.status(403).json({ error: guard.error.message, code: guard.error.code });
+
+    const hash = await bcrypt.hash(password, 10);
+    const created = await req.db.tx(async (c) => {
+      const u = await c.query(
+        `INSERT INTO users (username, full_name, password_hash, role, phone)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id, username, full_name, role, phone`,
+        [username, full_name || null, hash, legacyRoleName(roleCode), phone || null]
+      );
+      await c.query(
+        `INSERT INTO user_property_memberships (tenant_id, user_id, role_id)
+         SELECT $1, $2, id FROM roles WHERE tenant_id = $1 AND code = $3`,
+        [req.tenant.id, u.rows[0].id, roleCode]
+      );
+      return u.rows[0];
+    });
+    res.status(201).json({ ...created, role_code: roleCode });
   } catch (err) {
-    if (err.code === '23505') return res.status(409).json({ error: 'That username is already taken' });
+    if (err.code === '23505') return res.status(409).json({ error: 'That username (or phone) is already taken' });
     res.status(500).json({ error: err.message });
   }
 });
@@ -954,7 +996,7 @@ router.post('/users', requireAdmin, async (req, res) => {
 
 /* ---------- CONFLICT CHECK (advisory, read-only) ---------- */
 // POST /api/admin/bookings/check-conflict
-router.post('/bookings/check-conflict', async (req, res) => {
+router.post('/bookings/check-conflict', requirePermission('reservation.view'), async (req, res) => {
   const { room_type_id, check_in, check_out } = req.body || {};
   if (!room_type_id || !check_in || !check_out)
     return res.status(400).json({ error: 'room_type_id, check_in and check_out are required' });
@@ -975,7 +1017,7 @@ router.post('/bookings/check-conflict', async (req, res) => {
 
 /* ---------- CONFLICT LOG (last 10 overbooking attempts) ---------- */
 // GET /api/admin/conflict-log
-router.get('/conflict-log', async (req, res) => {
+router.get('/conflict-log', requirePermission('reservation.view'), async (req, res) => {
   try {
     const { rows } = await req.db.query(
       `SELECT id, guest_name AS triggered_by, message, status, sent_at
@@ -993,7 +1035,7 @@ router.get('/conflict-log', async (req, res) => {
 // POST /api/admin/bookings/new
 // Body: { guest_id?, guest:{full_name,phone,email,address}?, room_type_id, room_id, check_in,
 //         check_out, num_guests, advance_paid, tax_percentage, status }
-router.post('/bookings/new', async (req, res) => {
+router.post('/bookings/new', requirePermission('reservation.create'), async (req, res) => {
   const b = req.body || {};
   const { room_type_id, check_in, check_out, room_id } = b;
   if (!room_type_id || !check_in || !check_out || !room_id)
@@ -1111,7 +1153,7 @@ router.post('/bookings/new', async (req, res) => {
 });
 
 /* ---------- GET ONE BOOKING ---------- */
-router.get('/bookings/:id', async (req, res) => {
+router.get('/bookings/:id', requirePermission('reservation.view'), async (req, res) => {
   try {
     const { rows } = await req.db.query(
       `SELECT b.*, g.full_name AS guest, g.phone, g.email, g.address,
@@ -1129,7 +1171,7 @@ router.get('/bookings/:id', async (req, res) => {
 });
 
 /* ---------- DELETE ALL BOOKINGS (owner only) ---------- */
-router.delete('/bookings', requireOwner, async (req, res) => {
+router.delete('/bookings', requirePermission('reservation.delete'), async (req, res) => {
   const client = await req.db.connect();
   try {
     await client.query('BEGIN');
@@ -1155,7 +1197,7 @@ router.delete('/bookings', requireOwner, async (req, res) => {
 });
 
 /* ---------- DELETE BOOKING (owner only) ---------- */
-router.delete('/bookings/:id', requireOwner, async (req, res) => {
+router.delete('/bookings/:id', requirePermission('reservation.delete'), async (req, res) => {
   const client = await req.db.connect();
   try {
     await client.query('BEGIN');
@@ -1180,7 +1222,7 @@ router.delete('/bookings/:id', requireOwner, async (req, res) => {
 
 /* ---------- EDIT BOOKING (dates, payment, status) ---------- */
 // PUT /api/admin/bookings/:id  { check_in, check_out, additional_payment, tax_percentage, status }
-router.put('/bookings/:id', async (req, res) => {
+router.put('/bookings/:id', requirePermission('reservation.modify'), async (req, res) => {
   const body = req.body || {};
   const client = await req.db.connect();
   try {
@@ -1281,7 +1323,7 @@ router.put('/bookings/:id', async (req, res) => {
 });
 
 /* ---------- CREATE / EDIT GUEST ---------- */
-router.post('/guests', async (req, res) => {
+router.post('/guests', requirePermission('guest.edit'), async (req, res) => {
   const g = req.body || {};
   if (!g.full_name) return res.status(400).json({ error: 'Name is required' });
   try {
@@ -1296,7 +1338,7 @@ router.post('/guests', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.delete('/guests/:id', requireOwner, async (req, res) => {
+router.delete('/guests/:id', requirePermission('guest.delete'), async (req, res) => {
   try {
     const { rows: bookings } = await req.db.query(
       'SELECT id FROM bookings WHERE guest_id=$1 AND tenant_id=$2 LIMIT 1', [req.params.id, req.tenant.id]
@@ -1310,7 +1352,7 @@ router.delete('/guests/:id', requireOwner, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.get('/guests/:id/bookings', async (req, res) => {
+router.get('/guests/:id/bookings', requirePermission('guest.view'), async (req, res) => {
   try {
     const { rows } = await req.db.query(
       `SELECT b.id, b.reference, b.check_in, b.check_out, b.num_guests,
@@ -1327,7 +1369,7 @@ router.get('/guests/:id/bookings', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/guests/:id', async (req, res) => {
+router.put('/guests/:id', requirePermission('guest.edit'), async (req, res) => {
   const g = req.body || {};
   try {
     const { rows } = await req.db.query(
@@ -1347,7 +1389,7 @@ router.put('/guests/:id', async (req, res) => {
 
 
 /* ---------------- EMPLOYEES ---------------- */
-router.get('/employees', async (req, res) => {
+router.get('/employees', requirePermission('staff.view'), async (req, res) => {
   try {
     const { rows } = await req.db.query('SELECT * FROM employees ORDER BY first_name, last_name');
     // Normalise: ensure every row has a `roles` array
@@ -1358,15 +1400,15 @@ router.get('/employees', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.post('/employees', async (req, res) => {
+router.post('/employees', requirePermission('staff.manage'), async (req, res) => {
   const { first_name, last_name, roles, role, phone, is_active } = req.body || {};
   if (!first_name) return res.status(400).json({ error: 'first_name is required' });
   const rolesArr = Array.isArray(roles) && roles.length > 0 ? roles : [role || 'Front Desk'];
   try {
     const { rows } = await req.db.query(
-      `INSERT INTO employees (first_name, last_name, role, roles, phone, is_active)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [first_name, last_name || null, rolesArr[0], rolesArr, phone || null, is_active !== false]
+      `INSERT INTO employees (first_name, last_name, role, roles, phone, is_active, rbac_role_code)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [first_name, last_name || null, rolesArr[0], rolesArr, phone || null, is_active !== false, employeeRoleCode(rolesArr)]
     );
     const row = rows[0];
     if (!row.roles || row.roles.length === 0) row.roles = [row.role];
@@ -1374,14 +1416,15 @@ router.post('/employees', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/employees/:id', async (req, res) => {
+router.put('/employees/:id', requirePermission('staff.manage'), async (req, res) => {
   const { first_name, last_name, roles, role, phone, is_active } = req.body || {};
   const rolesArr = Array.isArray(roles) && roles.length > 0 ? roles : [role || 'Front Desk'];
   try {
     const { rows } = await req.db.query(
-      `UPDATE employees SET first_name=$1, last_name=$2, role=$3, roles=$4, phone=$5, is_active=$6
+      `UPDATE employees SET first_name=$1, last_name=$2, role=$3, roles=$4, phone=$5, is_active=$6,
+              rbac_role_code=$9, token_version = token_version + 1
        WHERE employee_id=$7 AND tenant_id=$8 RETURNING *`,
-      [first_name, last_name || null, rolesArr[0], rolesArr, phone || null, is_active !== false, req.params.id, req.tenant.id]
+      [first_name, last_name || null, rolesArr[0], rolesArr, phone || null, is_active !== false, req.params.id, req.tenant.id, employeeRoleCode(rolesArr)]
     );
     if (!rows[0]) return res.status(404).json({ error: 'Employee not found' });
     const row = rows[0];
@@ -1390,7 +1433,7 @@ router.put('/employees/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.delete('/employees/:id', requireOwner, async (req, res) => {
+router.delete('/employees/:id', requirePermission('staff.delete'), async (req, res) => {
   try {
     const { rows } = await req.db.query('DELETE FROM employees WHERE employee_id=$1 AND tenant_id=$2 RETURNING *', [req.params.id, req.tenant.id]);
     if (!rows[0]) return res.status(404).json({ error: 'Employee not found' });
@@ -1399,7 +1442,7 @@ router.delete('/employees/:id', requireOwner, async (req, res) => {
 });
 
 // Set or update portal login credentials for an employee (owner/manager only)
-router.put('/employees/:id/credentials', requireAdmin, async (req, res) => {
+router.put('/employees/:id/credentials', requirePermission('user.manage'), async (req, res) => {
   const bcrypt = require('bcryptjs');
   const { username, password } = req.body || {};
   if (!username) return res.status(400).json({ error: 'username is required' });
@@ -1409,7 +1452,7 @@ router.put('/employees/:id/credentials', requireAdmin, async (req, res) => {
       updates.password_hash = await bcrypt.hash(password, 10);
     }
     const { rows } = await req.db.query(
-      `UPDATE employees SET username=$1 ${password ? ', password_hash=$4' : ''}
+      `UPDATE employees SET username=$1 ${password ? ', password_hash=$4, token_version = token_version + 1, failed_logins = 0, locked_until = NULL' : ''}
          WHERE employee_id=$2 AND tenant_id=$3 RETURNING employee_id, username`,
       password
         ? [username, req.params.id, req.tenant.id, updates.password_hash]
@@ -1424,7 +1467,7 @@ router.put('/employees/:id/credentials', requireAdmin, async (req, res) => {
 });
 
 /* ---------------- SHIFTS ---------------- */
-router.get('/shifts', async (req, res) => {
+router.get('/shifts', requirePermission('shift.view'), async (req, res) => {
   try {
     const { rows } = await req.db.query(
       `SELECT s.shift_id AS id, s.employee_id, s.shift_date, s.start_time, s.end_time, s.created_at,
@@ -1437,7 +1480,7 @@ router.get('/shifts', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.post('/shifts', async (req, res) => {
+router.post('/shifts', requirePermission('shift.manage'), async (req, res) => {
   const { employee_id, shift_date, start_time, end_time } = req.body || {};
   if (!employee_id || !shift_date) return res.status(400).json({ error: 'employee_id and shift_date are required' });
   if (!start_time || !end_time) return res.status(400).json({ error: 'start_time and end_time are required' });
@@ -1453,7 +1496,7 @@ router.post('/shifts', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.delete('/shifts', async (req, res) => {
+router.delete('/shifts', requirePermission('shift.manage'), async (req, res) => {
   const { employee_id, shift_date } = req.body || {};
   if (!employee_id || !shift_date) return res.status(400).json({ error: 'employee_id and shift_date are required' });
   try {
@@ -1467,7 +1510,7 @@ router.delete('/shifts', async (req, res) => {
 
 /* ---------------- SHIFT MASTER ---------------- */
 // GET /api/admin/shift-master — list all employees with their default shift times
-router.get('/shift-master', async (req, res) => {
+router.get('/shift-master', requirePermission('shift.view'), async (req, res) => {
   try {
     const { rows } = await req.db.query(
       `SELECT employee_id, first_name, last_name, role, phone, is_active,
@@ -1479,7 +1522,7 @@ router.get('/shift-master', async (req, res) => {
 });
 
 // PUT /api/admin/shift-master/:id — update default shift times (owner only)
-router.put('/shift-master/:id', requireOwner, async (req, res) => {
+router.put('/shift-master/:id', requirePermission('shift.master'), async (req, res) => {
   const { default_start_time, default_end_time } = req.body || {};
   try {
     const { rows } = await req.db.query(
@@ -1494,7 +1537,7 @@ router.put('/shift-master/:id', requireOwner, async (req, res) => {
 });
 
 /* ---------------- TASKS ---------------- */
-router.get('/tasks', async (req, res) => {
+router.get('/tasks', requirePermission('task.view'), async (req, res) => {
   try {
     const { rows } = await req.db.query(
       `SELECT t.*,
@@ -1509,7 +1552,7 @@ router.get('/tasks', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.post('/tasks', async (req, res) => {
+router.post('/tasks', requirePermission('task.manage'), async (req, res) => {
   const { title, description, assigned_to, priority, status, due_at, photo_required } = req.body || {};
   if (!title) return res.status(400).json({ error: 'title is required' });
   try {
@@ -1522,7 +1565,7 @@ router.post('/tasks', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/tasks/:id', async (req, res) => {
+router.put('/tasks/:id', requirePermission('task.update'), async (req, res) => {
   const body = req.body || {};
   const has = (k) => k in body;
   const { title, description, assigned_to, priority, status, due_at, photo_verification_url, photo_required } = body;
@@ -1576,7 +1619,7 @@ router.put('/tasks/:id', async (req, res) => {
 });
 
 /* ---------------- ROUTINES ---------------- */
-router.delete('/tasks/:id', requireOwner, async (req, res) => {
+router.delete('/tasks/:id', requirePermission('task.delete'), async (req, res) => {
   try {
     const { rows } = await req.db.query('DELETE FROM tasks WHERE task_id=$1 AND tenant_id=$2 RETURNING *', [req.params.id, req.tenant.id]);
     if (!rows[0]) return res.status(404).json({ error: 'Task not found' });
@@ -1584,7 +1627,7 @@ router.delete('/tasks/:id', requireOwner, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.get('/routines', async (req, res) => {
+router.get('/routines', requirePermission('task.view'), async (req, res) => {
   try {
     const { rows } = await req.db.query(
       `SELECT r.*,
@@ -1597,7 +1640,7 @@ router.get('/routines', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.post('/routines', async (req, res) => {
+router.post('/routines', requirePermission('task.manage'), async (req, res) => {
   const { employee_id, task_name, scheduled_time, photo_required } = req.body || {};
   if (!employee_id || !task_name || !scheduled_time)
     return res.status(400).json({ error: 'employee_id, task_name and scheduled_time are required' });
@@ -1611,7 +1654,7 @@ router.post('/routines', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.put('/routines/:id', requireOwner, async (req, res) => {
+router.put('/routines/:id', requirePermission('routine.manage'), async (req, res) => {
   const { employee_id, task_name, scheduled_time, photo_required } = req.body || {};
   if (!employee_id || !task_name || !scheduled_time)
     return res.status(400).json({ error: 'employee_id, task_name and scheduled_time are required' });
@@ -1629,7 +1672,7 @@ router.put('/routines/:id', requireOwner, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.delete('/routines/:id', requireOwner, async (req, res) => {
+router.delete('/routines/:id', requirePermission('routine.manage'), async (req, res) => {
   try {
     const { rows } = await req.db.query('DELETE FROM employee_routines WHERE routine_id=$1 AND tenant_id=$2 RETURNING *', [req.params.id, req.tenant.id]);
     if (!rows[0]) return res.status(404).json({ error: 'Routine not found' });
@@ -1637,7 +1680,7 @@ router.delete('/routines/:id', requireOwner, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.patch('/routines/:id/complete', uploadPhoto.single('photo'), async (req, res) => {
+router.patch('/routines/:id/complete', requirePermission('task.own'), uploadPhoto.single('photo'), async (req, res) => {
   let photoUrl = null;
   if (req.file) {
     photoUrl = `/uploads/${req.tenant.id}/routines/${req.file.filename}`;
@@ -1675,7 +1718,7 @@ router.patch('/routines/:id/complete', uploadPhoto.single('photo'), async (req, 
 /* ---------------- OPERATIONS LOG ---------------- */
 const opsPhotoStorage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const dir = path.join(__dirname, '..', '..', 'uploads', String(req.tenant.id), 'operations');
+    const dir = path.join(UPLOADS_DIR, String(req.tenant.id), 'operations');
     require('fs').mkdirSync(dir, { recursive: true });
     cb(null, dir);
   },
@@ -1686,7 +1729,7 @@ const opsPhotoStorage = multer.diskStorage({
 });
 const uploadOpsPhoto = multer({ storage: opsPhotoStorage, limits: { fileSize: 10 * 1024 * 1024 } });
 
-router.post('/operations', uploadOpsPhoto.single('photo'), async (req, res) => {
+router.post('/operations', requirePermission('operations.log'), uploadOpsPhoto.single('photo'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'A photo is required to complete a task or routine.' });
   const { frequency, task_category, task_name, status, metric_data } = req.body || {};
   if (!frequency || !task_name) return res.status(400).json({ error: 'frequency and task_name are required' });
@@ -1704,7 +1747,7 @@ router.post('/operations', uploadOpsPhoto.single('photo'), async (req, res) => {
 
 /* ---------------- DAILY PAYMENTS ---------------- */
 // GET /api/admin/daily-payments?date=YYYY-MM-DD
-router.get('/daily-payments', requireAdmin, async (req, res) => {
+router.get('/daily-payments', requirePermission('report.view'), async (req, res) => {
   const date = req.query.date || new Date().toISOString().slice(0, 10);
   try {
     const { rows } = await req.db.query(
@@ -1739,7 +1782,7 @@ router.get('/daily-payments', requireAdmin, async (req, res) => {
 });
 
 // PATCH /api/admin/bookings/:id/mark-balance-paid  — record remaining balance as collected
-router.patch('/bookings/:id/mark-balance-paid', requireAdmin, async (req, res) => {
+router.patch('/bookings/:id/mark-balance-paid', requirePermission('folio.post'), async (req, res) => {
   try {
     // Fetch full booking details before updating so we have the original pending_amount
     const before = await req.db.query(
@@ -1796,7 +1839,7 @@ router.patch('/bookings/:id/mark-balance-paid', requireAdmin, async (req, res) =
 });
 
 // PATCH /api/admin/bookings/:id/verify-payment  (owner only)
-router.patch('/bookings/:id/verify-payment', requireOwner, async (req, res) => {
+router.patch('/bookings/:id/verify-payment', requirePermission('payment.verify'), async (req, res) => {
   try {
     const { rows } = await req.db.query(
       `UPDATE bookings SET owner_payment_verified = TRUE WHERE id = $1 AND tenant_id = $2
@@ -1811,7 +1854,7 @@ router.patch('/bookings/:id/verify-payment', requireOwner, async (req, res) => {
 });
 
 // POST /api/admin/bookings/:id/send-invoice  (owner only)
-router.post('/bookings/:id/send-invoice', requireOwner, async (req, res) => {
+router.post('/bookings/:id/send-invoice', requirePermission('invoice.issue'), async (req, res) => {
   try {
     const { rows } = await req.db.query(
       `SELECT b.*, g.full_name AS guest, g.phone, g.email,
@@ -1839,7 +1882,7 @@ router.post('/bookings/:id/send-invoice', requireOwner, async (req, res) => {
 });
 
 /* ---------------- NOTIFICATION LOGS ---------------- */
-router.get('/notifications', async (req, res) => {
+router.get('/notifications', requirePermission('notification.view'), async (req, res) => {
   try {
     const { rows } = await req.db.query(
       `SELECT * FROM notification_logs ORDER BY sent_at DESC LIMIT 300`
@@ -1848,7 +1891,7 @@ router.get('/notifications', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.delete('/notifications', requireOwner, async (req, res) => {
+router.delete('/notifications', requirePermission('notification.clear'), async (req, res) => {
   try {
     await req.db.query(`DELETE FROM notification_logs WHERE tenant_id=$1`, [req.tenant.id]);
     res.json({ ok: true });
@@ -1858,7 +1901,7 @@ router.delete('/notifications', requireOwner, async (req, res) => {
 /* ---------------- SPECIAL REQUESTS (early check-in / late checkout) ---------------- */
 
 // GET /api/admin/special-requests?status=pending
-router.get('/special-requests', async (req, res) => {
+router.get('/special-requests', requirePermission('reservation.view'), async (req, res) => {
   const { status } = req.query;
   const params = [];
   let where = '';
@@ -1886,7 +1929,7 @@ router.get('/special-requests', async (req, res) => {
 });
 
 // POST /api/admin/special-requests  { booking_id, request_type, requested_time, notes? }
-router.post('/special-requests', async (req, res) => {
+router.post('/special-requests', requirePermission('reservation.modify'), async (req, res) => {
   const { booking_id, request_type, requested_time, notes } = req.body || {};
   if (!booking_id || !request_type || !requested_time)
     return res.status(400).json({ error: 'booking_id, request_type and requested_time are required' });
@@ -1916,7 +1959,7 @@ router.post('/special-requests', async (req, res) => {
 });
 
 // PATCH /api/admin/special-requests/:id  { status, notes? }
-router.patch('/special-requests/:id', requireAdmin, async (req, res) => {
+router.patch('/special-requests/:id', requirePermission('specialrequest.manage'), async (req, res) => {
   const { status, notes } = req.body || {};
   const allowed = ['pending', 'approved', 'denied', 'waived'];
   if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status' });
@@ -1983,7 +2026,7 @@ router.patch('/special-requests/:id', requireAdmin, async (req, res) => {
 
 // POST /api/admin/bookings/:id/early-checkout
 // Guest leaves before original check_out. Releases remaining inventory and calculates refund.
-router.post('/bookings/:id/early-checkout', requireAdmin, async (req, res) => {
+router.post('/bookings/:id/early-checkout', requirePermission('reservation.checkout'), async (req, res) => {
   const { actual_checkout, refund_method, waive_refund, refund_amount: requestedRefund, manual_refund_amount, notes } = req.body || {};
   if (!actual_checkout) return res.status(400).json({ error: 'actual_checkout is required' });
 
@@ -2117,55 +2160,38 @@ router.post('/bookings/:id/early-checkout', requireAdmin, async (req, res) => {
 
 // POST /api/admin/bookings/:id/refund
 // Generic refund: overpayment, room downgrade, manual cancellation adjustment.
-router.post('/bookings/:id/refund', requireAdmin, async (req, res) => {
+router.post('/bookings/:id/refund', requirePermission('folio.refund'), async (req, res) => {
   const { refund_amount, refund_method, reason, notes } = req.body || {};
   if (refund_amount == null || Number(refund_amount) <= 0)
     return res.status(400).json({ error: 'refund_amount must be a positive number' });
   if (!reason) return res.status(400).json({ error: 'reason is required' });
 
-  const client = await req.db.connect();
   try {
-    await client.query('BEGIN');
-    const cur = await client.query('SELECT * FROM bookings WHERE id=$1 AND tenant_id=$2 FOR UPDATE', [req.params.id, req.tenant.id]);
-    if (!cur.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Booking not found' }); }
-    const bk = cur.rows[0];
-
-    const advancePaid = Number(bk.advance_paid);
-    const requested   = Number(refund_amount);
-    if (requested > advancePaid) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: `Refund (${requested}) cannot exceed amount collected (${advancePaid})` });
+    // Above the threshold, anyone who is not an approver files a request instead.
+    const gate = requiresApproval({ kind: 'refund.booking', amount: refund_amount }, req.user.permissions, approvalPolicy());
+    if (gate.ok && gate.value) {
+      const ap = await createApproval(req.db, req.tenant, req.user, {
+        kind: 'refund.booking', amount: refund_amount, reason,
+        payload: { booking_id: Number(req.params.id), refund_amount: Number(refund_amount), refund_method, reason, notes },
+      });
+      return res.status(202).json({ ok: true, pending_approval: true, approval_id: ap.id });
     }
 
-    await client.query(
-      `UPDATE bookings SET
-          refund_amount = $1,
-          refund_status = 'pending',
-          refund_reason = $2,
-          refund_method = $3
-        WHERE id = $4`,
-      [requested, reason, refund_method || 'cash', req.params.id]
-    );
-    await client.query(
-      `INSERT INTO payments (booking_id, type, amount, status, notes, processed_by)
-       VALUES ($1, 'refund', $2, 'pending', $3, $4)`,
-      [req.params.id, requested, notes || null, req.user.id]
-    );
-
-    await client.query('COMMIT');
-    res.json({ ok: true, refund_amount: requested, refund_status: 'pending' });
+    const out = await req.db.tx((client) => recordBookingRefund(client, {
+      tenantId: req.tenant.id, bookingId: req.params.id, amount: refund_amount,
+      method: refund_method, reason, notes, userId: req.user.id,
+    }));
+    if (!out.ok) return res.status(out.error.code === 'BOOKING_NOT_FOUND' ? 404 : 400).json({ error: out.error.message, code: out.error.code });
+    res.json({ ok: true, ...out.value });
   } catch (err) {
-    await client.query('ROLLBACK');
     console.error('[admin/refund]', err.message);
     res.status(500).json({ error: err.message });
-  } finally {
-    client.release();
   }
 });
 
 // PATCH /api/admin/bookings/:id/refund-processed  (owner only)
 // Marks a pending refund as physically handed back to the guest.
-router.patch('/bookings/:id/refund-processed', requireOwner, async (req, res) => {
+router.patch('/bookings/:id/refund-processed', requirePermission('folio.refund_process'), async (req, res) => {
   const { notes, refund_amount, refund_method } = req.body || {};
   try {
     const { rows } = await req.db.query(
@@ -2207,7 +2233,7 @@ router.patch('/bookings/:id/refund-processed', requireOwner, async (req, res) =>
 
 /* ---------- EARLY CHECKOUT PREVIEW ---------- */
 // GET /api/admin/bookings/:id/early-checkout/preview?actual_checkout=YYYY-MM-DD
-router.get('/bookings/:id/early-checkout/preview', requireAdmin, async (req, res) => {
+router.get('/bookings/:id/early-checkout/preview', requirePermission('reservation.checkout'), async (req, res) => {
   const { actual_checkout } = req.query;
   if (!actual_checkout) return res.status(400).json({ error: 'actual_checkout query param is required' });
   try {
@@ -2259,7 +2285,7 @@ router.get('/bookings/:id/early-checkout/preview', requireAdmin, async (req, res
 
 /* ---------- EXTEND STAY AVAILABILITY ---------- */
 // GET /api/admin/bookings/:id/extend/availability?new_checkout=YYYY-MM-DD
-router.get('/bookings/:id/extend/availability', requireAdmin, async (req, res) => {
+router.get('/bookings/:id/extend/availability', requirePermission('reservation.extend'), async (req, res) => {
   const { new_checkout } = req.query;
   if (!new_checkout) return res.status(400).json({ error: 'new_checkout query param is required' });
   try {
@@ -2356,7 +2382,7 @@ router.get('/bookings/:id/extend/availability', requireAdmin, async (req, res) =
 /* ---------- EXTEND STAY ---------- */
 // POST /api/admin/bookings/:id/extend
 // Body: { new_checkout, room_type_id?, room_id?, additional_payment?, payment_method?, notes? }
-router.post('/bookings/:id/extend', requireAdmin, async (req, res) => {
+router.post('/bookings/:id/extend', requirePermission('reservation.extend'), async (req, res) => {
   const { new_checkout, room_type_id: newTypeId, room_id: newRoomId, additional_payment, payment_method, notes } = req.body || {};
   if (!new_checkout) return res.status(400).json({ error: 'new_checkout is required' });
   const client = await req.db.connect();
@@ -2463,7 +2489,7 @@ router.post('/bookings/:id/extend', requireAdmin, async (req, res) => {
 
 /* ---------------- FEEDBACK (admin) ---------------- */
 // GET /api/admin/feedback
-router.get('/feedback', requireAdmin, async (req, res) => {
+router.get('/feedback', requirePermission('feedback.view'), async (req, res) => {
   try {
     const { rows } = await req.db.query(
       `SELECT gf.id, gf.token, gf.rating_overall, gf.rating_room, gf.rating_service,
@@ -2483,7 +2509,7 @@ router.get('/feedback', requireAdmin, async (req, res) => {
 });
 
 // GET /api/admin/bookings/due-checkout-today
-router.get('/bookings/due-checkout-today', requireAdmin, async (req, res) => {
+router.get('/bookings/due-checkout-today', requirePermission('reservation.checkout'), async (req, res) => {
   try {
     const { rows } = await req.db.query(
       `SELECT b.id, b.reference, b.check_in, b.check_out, b.nights,
@@ -2506,7 +2532,7 @@ router.get('/bookings/due-checkout-today', requireAdmin, async (req, res) => {
 });
 
 // POST /api/admin/bookings/:id/notify-checkout
-router.post('/bookings/:id/notify-checkout', requireAdmin, async (req, res) => {
+router.post('/bookings/:id/notify-checkout', requirePermission('reservation.checkout'), async (req, res) => {
   try {
     const { rows } = await req.db.query(
       `SELECT b.id, b.reference, b.check_in, b.check_out, b.nights, b.status,
@@ -2544,7 +2570,7 @@ router.post('/bookings/:id/notify-checkout', requireAdmin, async (req, res) => {
 });
 
 // GET /api/admin/feedback/stats
-router.get('/feedback/stats', requireAdmin, async (req, res) => {
+router.get('/feedback/stats', requirePermission('feedback.view'), async (req, res) => {
   try {
     const { rows } = await req.db.query(
       `SELECT
@@ -2568,7 +2594,7 @@ router.get('/feedback/stats', requireAdmin, async (req, res) => {
 
 /* ---------------- COMPETITOR RATES ---------------- */
 // GET /api/admin/competitor-rates/latest  → latest rate for each resort
-router.get('/competitor-rates/latest', async (req, res) => {
+router.get('/competitor-rates/latest', requirePermission('pricing.view'), async (req, res) => {
   try {
     const { rows } = await req.db.query(
       `SELECT DISTINCT ON (resort_name) resort_name, room_type, rate, fetched_at
@@ -2583,7 +2609,7 @@ router.get('/competitor-rates/latest', async (req, res) => {
 
 /* ---------------- SUPPRESSED YIELD LOG ---------------- */
 // GET /api/admin/suppressed-yield?from=&to=
-router.get('/suppressed-yield', requireOwner, async (req, res) => {
+router.get('/suppressed-yield', requirePermission('pricing.audit'), async (req, res) => {
   const from = req.query.from || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
   const to   = req.query.to   || new Date().toISOString().slice(0, 10);
   try {
@@ -2612,7 +2638,7 @@ router.get('/suppressed-yield', requireOwner, async (req, res) => {
 });
 
 // POST /api/admin/suppressed-yield  (called when surge is capped)
-router.post('/suppressed-yield', async (req, res) => {
+router.post('/suppressed-yield', requirePermission('rate.override'), async (req, res) => {
   const { unconstrained_price, applied_price, delta, room_id } = req.body || {};
   if (!unconstrained_price || !delta) return res.status(400).json({ error: 'unconstrained_price and delta required' });
   try {
@@ -2631,12 +2657,23 @@ router.post('/suppressed-yield', async (req, res) => {
 
 // GET /api/admin/whatsapp/status
 // Returns whether the WhatsApp client is ready and how many messages are queued in DB.
-router.get('/whatsapp/status', async (req, res) => {
+router.get('/whatsapp/status', requirePermission('whatsapp.view'), async (req, res) => {
   try {
     const { getWhatsAppStatus } = require('../services/whatsapp');
     const { ready, initializing } = getWhatsAppStatus();
     const { rows } = await req.db.query(`SELECT COUNT(*) AS count FROM whatsapp_queue`);
-    res.json({ ready, initializing, pending_count: parseInt(rows[0].count, 10) });
+    res.json({ ready, initializing, awaiting_scan: getWhatsAppStatus().awaitingScan, pending_count: parseInt(rows[0].count, 10) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/whatsapp/qr — block-art pairing QR while waiting for a scan.
+router.get('/whatsapp/qr', requirePermission('whatsapp.manage'), async (req, res) => {
+  try {
+    const { getWhatsAppStatus, getWhatsAppQr } = require('../services/whatsapp');
+    const st = getWhatsAppStatus();
+    res.json({ ready: st.ready, qr: st.ready ? null : getWhatsAppQr() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2644,7 +2681,7 @@ router.get('/whatsapp/status', async (req, res) => {
 
 // POST /api/admin/whatsapp/retry
 // Manually trigger a drain of the DB queue (in case you don't want to wait for the heartbeat).
-router.post('/whatsapp/retry', async (req, res) => {
+router.post('/whatsapp/retry', requirePermission('whatsapp.manage'), async (req, res) => {
   try {
     const { getWhatsAppStatus, drainDbQueue } = require('../services/whatsapp');
     const { ready } = getWhatsAppStatus();

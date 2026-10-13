@@ -5,7 +5,7 @@ import {
   Moon, Sun, LayoutGrid, LogOut, ChevronRight, X, ListChecks, LayoutDashboard,
   ConciergeBell, ClipboardList, CheckSquare, Camera, Bell, Star,
 } from "lucide-react";
-import { employeeLogin, setEmployeeSession, getEmployeeUser, getEmployeeToken, clearEmployeeSession, initToaster } from "./adminContext.js";
+import { employeeLogin, employeePinLogin, enrolDevice, setEmployeeSession, getEmployeeUser, getEmployeeToken, clearEmployeeSession, initToaster, can, refreshPermissions, hasPermissionData } from "./adminContext.js";
 import LoginPage from "./LoginPage.jsx";
 
 import Dashboard       from "./Dashboard.jsx";
@@ -39,6 +39,13 @@ const ROLE_NAV = {
   "Pool Attendant": ["dashboard", "tasks", "routines", "operations"],
   "Maintenance":    ["dashboard", "tasks", "routines", "operations"],
   "Housekeeping":   ["dashboard", "mytasks", "routines", "operations"],
+};
+
+/* Page -> permission (any-of). UI hint only; the API enforces. */
+const STAFF_NAV_PERMS = {
+  dashboard: ["dashboard.view"], frontdesk: ["reservation.view"], bookings: ["reservation.view"],
+  tasks: ["task.view"], mytasks: ["task.own"], routines: ["task.view"], operations: ["operations.log"],
+  authentication: ["notification.view"], specialrequests: ["reservation.view"],
 };
 
 function getVisibleNav(roles) {
@@ -106,7 +113,12 @@ export default function StaffApp() {
             subtitle="Staff Portal — Sunshine Resort"
             hint="Use your staff credentials to sign in."
             isStaff
-            onLogin={async (u, p) => { const { token, employee, tenant } = await employeeLogin(u, p); setEmployeeSession(token, employee, tenant); setAuthed(true); }}
+            allowPin
+            onEnrol={(code) => enrolDevice(code, (navigator.userAgent || 'phone').slice(0, 60))}
+            onLogin={async (u, p, mode) => {
+              const { token, employee, tenant } = mode === 'pin' ? await employeePinLogin(u, p) : await employeeLogin(u, p);
+              setEmployeeSession(token, employee, tenant); setAuthed(true);
+            }}
           />
       }
       <Toaster toasts={toasts} />
@@ -117,7 +129,9 @@ export default function StaffApp() {
 function StaffShell({ onLogout }) {
   const user        = getEmployeeUser();
   const userRoles   = user.roles || [user.role || "Front Desk"];
-  const visibleNav  = getVisibleNav(userRoles);
+  const [, setPermTick] = useState(0);
+  useEffect(() => { refreshPermissions().then(() => setPermTick(t => t + 1)).catch(() => {}); }, []);
+  const visibleNav  = getVisibleNav(userRoles).filter(n => !hasPermissionData() || can(...(STAFF_NAV_PERMS[n.key] || [])));
   const defaultPage = getDefaultPage();
 
   const [active,   setActive]   = useState(defaultPage);

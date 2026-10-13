@@ -194,7 +194,6 @@ function LoginModal({onSuccess,onClose}){
         <input className="login-input" type="password" value={password} onChange={e=>setPassword(e.target.value)} autoComplete="current-password" placeholder="••••••••"/>
         {err && <div className="login-err">{err}</div>}
         <button className="login-submit" disabled={busy}>{busy?"Signing in…":"Sign In"}</button>
-        <div className="login-hint">Default: <b>admin</b> / <b>admin123</b></div>
       </form>
     </div>
   );

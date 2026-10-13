@@ -20,8 +20,10 @@ export const getTenantSlug = () => {
   if (parts.length >= 2 && parts[parts.length - 1] === 'localhost' && parts[0] !== 'localhost') {
     return parts[0]; // slug.localhost (dev)
   }
-  if (parts.length >= 3) return parts[0]; // slug.example.com
-  return null; // bare host — backend dev fallback decides
+  if (import.meta.env.VITE_TENANT_SLUG) return import.meta.env.VITE_TENANT_SLUG;
+  // Real domains: the server resolves the resort from the Host header
+  // (BASE_DOMAIN / DEFAULT_TENANT_SLUG), so send no explicit slug.
+  return null;
 };
 
 export const setTenantSlug = (slug) => {
