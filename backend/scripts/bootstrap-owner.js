@@ -70,11 +70,18 @@ async function main() {
       throw new Error(`Tenant '${slug}' already has an owner ('${owners.rows[0].username}'). Use --reset to rotate their password.`);
     }
     if (owners.rows.length && reset) {
+      // --reset --username X: rotate the owner named X, or (if none) the first
+      // owner, renaming it to X — so this also changes the login name.
       const target = owners.rows.find((o) => o.username === username) || owners.rows[0];
+      const clash = await client.query(
+        'SELECT 1 FROM users WHERE tenant_id = $1 AND username = $2 AND id <> $3', [tenantId, username, target.id]);
+      if (clash.rows[0]) throw new Error(`Another user in '${slug}' is already called '${username}'`);
       await client.query(
-        `UPDATE users SET password_hash=$1, token_version = token_version + 1, failed_logins=0, locked_until=NULL
-          WHERE id=$2 AND tenant_id=$3`, [hash, target.id, tenantId]);
-      console.log(`Rotated password for owner '${target.username}' and revoked their sessions.`);
+        `UPDATE users SET username=$1, password_hash=$2, token_version = token_version + 1, failed_logins=0, locked_until=NULL
+          WHERE id=$3 AND tenant_id=$4`, [username, hash, target.id, tenantId]);
+      console.log(target.username === username
+        ? `Rotated password for owner '${username}' and revoked their sessions.`
+        : `Renamed owner '${target.username}' -> '${username}', set the new password and revoked their sessions.`);
     } else {
       const u = await client.query(
         `INSERT INTO users (tenant_id, username, full_name, password_hash, role)
