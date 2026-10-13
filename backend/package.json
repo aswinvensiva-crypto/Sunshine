@@ -13,6 +13,7 @@
     "db:deploy": "node db/deploy.js",
     "bootstrap-owner": "node scripts/bootstrap-owner.js",
     "dev:admin-logins": "node scripts/set-dev-passwords.js",
+    "reset-platform-admin": "node scripts/reset-platform-admin.js",
     "test": "node --test --test-force-exit \"test/**/*.test.js\""
   },
   "dependencies": {
