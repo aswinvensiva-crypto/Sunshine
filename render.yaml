@@ -11,8 +11,9 @@ services:
       npm ci --prefix backend &&
       npm ci --include=dev --prefix client &&
       npm run build --prefix client
-    preDeployCommand: npm run db:deploy --prefix backend   # creates/migrates the DB before each release
-    startCommand: npm start --prefix backend
+    # Sets up / migrates the database, then starts the server (works on every plan,
+    # including those without a pre-deploy step). Migrations are idempotent.
+    startCommand: npm run start:render --prefix backend
     healthCheckPath: /api/health
     disk:
       name: sunshine-data

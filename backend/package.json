@@ -6,6 +6,7 @@
   "main": "server/server.js",
   "scripts": {
     "start": "node server/server.js",
+    "start:render": "node db/deploy.js && node server/server.js",
     "dev": "nodemon server/server.js",
     "db:setup": "node db/setup.js",
     "db:migrate": "node db/migrate.js",
