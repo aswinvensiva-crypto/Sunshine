@@ -7,6 +7,7 @@
  *   3. DEFAULT_TENANT_SLUG env (dev fallback so plain http://localhost keeps
  *      working; defaults to 'sunshine-original' outside production, and is
  *      used in production only when set explicitly).
+ *   TENANT_HOST_ROUTING=off: skip step 2 entirely (tunnels, single resort).
  *   BASE_DOMAIN (optional; on Render defaults to RENDER_EXTERNAL_HOSTNAME):
  *   only <slug>.<BASE_DOMAIN> hosts carry a slug.
  *
@@ -74,7 +75,11 @@ function invalidateTenantCache(slug) {
 async function resolveTenant(req, res, next) {
   try {
     const headerSlug = (req.headers['x-tenant-slug'] || '').trim().toLowerCase();
-    const hostSlug = slugFromHost(req.hostname || req.headers.host);
+    // TENANT_HOST_ROUTING=off: ignore the web address (tunnels / single-resort
+    // hosting where the hostname is random), so DEFAULT_TENANT_SLUG decides.
+    const hostSlug = process.env.TENANT_HOST_ROUTING === 'off'
+      ? null
+      : slugFromHost(req.hostname || req.headers.host);
     // Production only falls back when DEFAULT_TENANT_SLUG is set explicitly
     // (single-resort deployments); dev falls back to the original resort.
     const devFallback =

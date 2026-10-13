@@ -123,3 +123,46 @@ add the DNS record Render shows at your domain registrar. Nothing else changes:
   tenant isolation relies on the application code (Postgres row-level security
   is not a separate barrier). Fine for one resort; revisit before onboarding
   other resorts.
+
+---
+
+# Alternative: host on your own laptop/PC with Cloudflare Tunnel (free)
+
+Uses your local Postgres and local disk (WhatsApp session + photos stay on the
+machine). The site is online only while the computer is on and connected.
+
+**One-time setup**
+
+1. In `backend/.env` set (already done on the original laptop):
+   ```
+   DEFAULT_TENANT_SLUG=sunshine-original
+   TENANT_HOST_ROUTING=off
+   ```
+2. Install the tunnel tool:
+   ```powershell
+   winget install --id Cloudflare.cloudflared
+   ```
+
+**Every time you start the site** (two PowerShell windows):
+
+```powershell
+cd "C:\Users\Aswin\Downloads\Sunshine-master (1)\Sunshine-master"
+npm run build --prefix client
+npm run start:render --prefix backend
+```
+```powershell
+cloudflared tunnel --url http://localhost:5001
+```
+The second window prints a public address like
+`https://some-random-words.trycloudflare.com` — that is your live site
+(`/admin`, `/platform` work on it). The quick-tunnel address changes on every
+restart; for a permanent address (e.g. `sunshineresort.in`) create a free
+Cloudflare account, add your domain, and use a named tunnel
+(`cloudflared tunnel login` → `cloudflared tunnel create sunshine` →
+`cloudflared tunnel route dns sunshine sunshineresort.in` →
+`cloudflared tunnel run --url http://localhost:5001 sunshine`).
+
+**Keep it reachable:** stop Windows from sleeping while plugged in
+(Settings → System → Power → *Never*), and don't use the weak local
+`admin/admin123` login on a public address — set a strong owner password
+with `npm run bootstrap-owner -- --username admin --reset`.
