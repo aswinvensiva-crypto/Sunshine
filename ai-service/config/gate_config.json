@@ -1,0 +1,15 @@
+{
+  "_note": "Gate thresholds for model activation. U-17: team must set these; no default is presented as acceptable. These are PLACEHOLDER values to be replaced by the team before production.",
+  "risk": {
+    "roc_auc": {"min": 0.60}
+  },
+  "forecast": {
+    "smape": {"max": 50.0}
+  },
+  "pricing": {
+    "rmse": {"max": 2000.0}
+  },
+  "rag": {
+    "hit_rate_at_5": {"min": 0.50}
+  }
+}
