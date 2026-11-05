@@ -1,0 +1,12 @@
+{
+  "tenant_id": 1,
+  "module": "risk",
+  "version": "v1.0.0",
+  "metrics": {
+    "roc_auc": 0.85,
+    "f1": 0.78
+  },
+  "data_source": "synthetic",
+  "trained_at": "2026-10-24T07:29:10.534281+00:00",
+  "checksum": "bb92a56abd038a0ae204de084d408c76132951cb842d878ef2744462ac915c2d"
+}
